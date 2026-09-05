@@ -110,8 +110,20 @@ process_t *process_kernel(void);
 /* Build a Ring-3 process from a blob of position-dependent machine code.
  * `code` is copied into fresh user pages at USER_CODE_BASE and a user
  * stack is mapped below USER_STACK_TOP.  Returns the pid, or -1.
- * ponytail: raw blob loader; the ELF loader replaces this in Phase 5. */
+ * ponytail: raw blob loader; kept for the Phase 4 tests, which exercise
+ * paths (deliberate faults) that a well-formed ELF cannot express. */
 pid_t_v process_spawn_user(const void *code, uint64_t code_len, pid_t_v parent);
+
+/* Build a Ring-3 process from an ELF64 image held in kernel memory.
+ * Validates the image, populates a fresh address space from its PT_LOAD
+ * segments, and starts a thread at the ELF entry point.  Returns the pid,
+ * or a negative elf_status_t on failure — the caller can distinguish
+ * "malformed binary" from "out of memory".  Nothing is left running on
+ * failure; the partially built process is destroyed.
+ *
+ * The future execve() path differs only in reusing the *calling* process
+ * rather than allocating a new one. */
+pid_t_v process_spawn_elf(const void *image, uint64_t size, pid_t_v parent);
 
 /* Terminate the calling process with `status`; never returns to it. */
 isr_frame_t *process_exit_current(isr_frame_t *frame, int32_t status);

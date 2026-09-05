@@ -20,12 +20,39 @@ override LDFLAGS := -nostdlib -z max-page-size=0x1000 \
 
 override ASMFLAGS := -f elf64 -g
 
+# ── userland ELF test executables ────────────────────────────────────────
+# Freestanding static non-PIE binaries, linked at a fixed base and embedded
+# into the kernel image by kernel/elf/elf_blobs.asm.  max-page-size=0x1000
+# keeps p_align at 4 KiB; the default 2 MiB would pad the file enormously.
+override UCFLAGS := -std=c2x -Wall -Wextra -O2 \
+	-ffreestanding -fno-stack-protector -fno-stack-check -fno-pic -fno-pie \
+	-mno-red-zone -mno-mmx -mno-sse -mno-sse2 \
+	-m64 -march=x86-64
+
+override ULDFLAGS := -nostdlib -static -z max-page-size=0x1000 -z noexecstack
+
+UELF := build/userland/elf_test.elf build/userland/elf_packed.elf
+
 CSRC := $(shell find kernel -name '*.c')
 ASMSRC := $(shell find kernel -name '*.asm')
 OBJ := $(CSRC:%.c=build/%.c.o) $(ASMSRC:%.asm=build/%.asm.o)
 
-.PHONY: all clean run run-uefi iso
+.PHONY: all clean run run-uefi iso userland
 all: $(ISO)
+userland: $(UELF)
+
+build/userland/elf_test.c.o: userland/elf_test.c
+	@mkdir -p $(dir $@)
+	$(CC) $(UCFLAGS) -c $< -o $@
+
+build/userland/elf_test.elf: build/userland/elf_test.c.o userland/user.ld
+	$(LD) $(ULDFLAGS) -T userland/user.ld $< -o $@
+
+build/userland/elf_packed.elf: build/userland/elf_test.c.o userland/user_packed.ld
+	$(LD) $(ULDFLAGS) -T userland/user_packed.ld $< -o $@
+
+# incbin reads the linked user ELFs, so they must exist before nasm runs.
+build/kernel/elf/elf_blobs.asm.o: $(UELF)
 
 build/%.c.o: %.c
 	@mkdir -p $(dir $@)

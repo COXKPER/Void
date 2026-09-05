@@ -12,6 +12,7 @@
 #include <proc/process.h>
 #include <sched/sched.h>
 #include <syscall/syscall.h>
+#include <elf/elf.h>
 #include <arch/x86_64/gdt.h>
 #include <mm/pmm.h>
 #include <mm/vmm.h>
@@ -266,6 +267,54 @@ pid_t_v process_spawn_user(const void *code, uint64_t code_len, pid_t_v parent) 
     thread_t *t = sched_adopt_thread((uint64_t)f, p->cr3, p,
                                      (uint64_t *)kbase, KTHREAD_STACK_SIZE);
     if (!t) { process_destroy(p); return -1; }
+
+    p->thread = t;
+    p->state  = PROC_READY;
+    return p->pid;
+}
+
+/* ── process_spawn_elf ───────────────────────────────────────────────────
+ * Like process_spawn_user but loads an ELF64 image instead of a raw blob.
+ * Assumes a kernel-resident buffer; validation happens before any mapping. */
+pid_t_v process_spawn_elf(const void *image, uint64_t size, pid_t_v parent) {
+    if (!image || size == 0) return -1;
+
+    /* Validate before allocating anything: a malformed image must not cost a
+     * PID or a page table. */
+    elf_loader_t ctx;
+    elf_status_t es = elf_validate(image, size, &ctx);
+    if (es != ELF_OK) return (pid_t_v)es;
+
+    process_t *p = process_alloc(parent);
+    if (!p) return -1;
+
+    uint64_t entry, rsp;
+    es = elf_load_into_process(&ctx, p, &entry, &rsp);
+    if (es != ELF_OK) {
+        process_destroy(p);
+        return (pid_t_v)es;
+    }
+
+    uint64_t kbase;
+    uint64_t ktop = sched_alloc_kstack(&kbase);
+    if (!ktop) { process_destroy(p); return (pid_t_v)ELF_ERR_NOMEM; }
+
+    /* Same initial frame shape as the blob path — only RIP and RSP differ,
+     * and both come from the loader rather than being fixed constants. */
+    isr_frame_t *f = (isr_frame_t *)(ktop - sizeof(isr_frame_t));
+    for (uint64_t i = 0; i < sizeof(isr_frame_t) / 8; i++)
+        ((uint64_t *)f)[i] = 0;
+
+    f->ss     = GDT_SEL_UDATA3;
+    f->rsp    = rsp;
+    f->rflags = 0x202;                    /* IF=1; IOPL=0, so no port I/O   */
+    f->cs     = GDT_SEL_UCODE3;
+    f->rip    = entry;
+    f->vector = 0;
+
+    thread_t *t = sched_adopt_thread((uint64_t)f, p->cr3, p,
+                                     (uint64_t *)kbase, KTHREAD_STACK_SIZE);
+    if (!t) { process_destroy(p); return (pid_t_v)ELF_ERR_NOMEM; }
 
     p->thread = t;
     p->state  = PROC_READY;

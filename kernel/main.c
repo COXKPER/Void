@@ -23,6 +23,13 @@ extern void kheap_init(void);
 extern const uint8_t user_prog_start[], user_prog_end[];
 extern const uint8_t user_bad_start[],  user_bad_end[];
 
+/* ELF test images (kernel/elf/elf_blobs.asm) */
+extern const uint8_t elf_test_start[], elf_test_end[];
+extern const uint8_t elf_packed_start[], elf_packed_end[];
+
+/* ELF self-check (kernel/elf/elf_selftest.c) */
+uint32_t elf_selftest(const void *image, uint64_t size);
+
 /* ── timer IRQ → scheduler ───────────────────────────────────────────── */
 static isr_frame_t *timer_handler(isr_frame_t *frame) {
     return sched_tick(frame);
