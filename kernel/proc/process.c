@@ -582,6 +582,15 @@ isr_frame_t *process_exit_current(isr_frame_t *frame, int32_t status) {
     p->exited      = true;
     p->state       = PROC_ZOMBIE;
 
+    /* Orphaned children must not dangle: reparent every child of ours to our
+     * parent.  The chain always terminates at pid 0 (the immortal kernel
+     * process), so no zombie ever becomes unreachable by a reaper. */
+    for (int i = 0; i < MAX_PROCESSES; i++) {
+        process_t *c = &proc_table[i];
+        if (c->state != PROC_UNUSED && c->ppid == p->pid)
+            c->ppid = p->ppid;
+    }
+
     /* Release user memory now; the PCB stays until the parent reaps it so
      * the status is still readable.  Page tables go with it, so this
      * thread must never run again — hence THREAD_EXITED below. */

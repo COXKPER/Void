@@ -181,8 +181,15 @@ void NO_RETURN kernel_main(void) {
     interrupts_enable();
     kprintf("[VoidOS] Ready.\n\r");
 
-    for (;;)
+    /* Kernel idle loop.  pid 0 is immortal, so no process that gets its
+     * parent reparented to 0 (orphans, boot-test children) can ever be reaped
+     * by a living process — reap them here, cheaply, whenever one exits. */
+    for (;;) {
         __asm__ volatile ("hlt");
+        int32_t st = 0;
+        for (int i = 0; i < MAX_PROCESSES; i++)
+            if (process_try_reap(0, -1, &st) <= 0) break;
+    }
 
     __builtin_unreachable();
 }
