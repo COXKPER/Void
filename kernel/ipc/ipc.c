@@ -128,7 +128,13 @@ void ipc_handle_table_destroy(ipc_handle_table_t *table) {
 
 int32_t sys_ipc_endpoint_create(void) {
     process_t *p = process_current();
-    if (!p || !p->ipc_handles) return -VE_PERM;
+    if (!p) return -VE_PERM;
+
+    /* Lazy-allocate handle table on first endpoint creation */
+    if (!p->ipc_handles) {
+        p->ipc_handles = ipc_handle_table_create();
+        if (!p->ipc_handles) return -VE_NOMEM;
+    }
 
     /* Find a free handle slot */
     int32_t handle = -1;
@@ -170,7 +176,13 @@ int32_t sys_ipc_endpoint_create(void) {
 int32_t sys_ipc_send(int32_t dest_handle, uint32_t tag,
                      const void *data, uint32_t data_len) {
     process_t *p = process_current();
-    if (!p || !p->ipc_handles) return -VE_PERM;
+    if (!p) return -VE_PERM;
+
+    /* Lazy-allocate handle table if needed */
+    if (!p->ipc_handles) {
+        p->ipc_handles = ipc_handle_table_create();
+        if (!p->ipc_handles) return -VE_NOMEM;
+    }
 
     /* Validate handle range */
     if (dest_handle < 0 || dest_handle >= IPC_MAX_HANDLES) {
@@ -222,7 +234,13 @@ int32_t sys_ipc_send(int32_t dest_handle, uint32_t tag,
 int32_t sys_ipc_recv(int32_t handle, uint32_t *tag_out,
                      void *data_out, uint32_t max_len) {
     process_t *p = process_current();
-    if (!p || !p->ipc_handles) return -VE_PERM;
+    if (!p) return -VE_PERM;
+
+    /* Lazy-allocate handle table if needed */
+    if (!p->ipc_handles) {
+        p->ipc_handles = ipc_handle_table_create();
+        if (!p->ipc_handles) return -VE_NOMEM;
+    }
 
     /* Validate handle range */
     if (handle < 0 || handle >= IPC_MAX_HANDLES) {
@@ -279,7 +297,13 @@ int32_t sys_ipc_recv(int32_t handle, uint32_t *tag_out,
 
 int32_t sys_ipc_close(int32_t handle) {
     process_t *p = process_current();
-    if (!p || !p->ipc_handles) return -VE_PERM;
+    if (!p) return -VE_PERM;
+
+    /* Lazy-allocate handle table if needed */
+    if (!p->ipc_handles) {
+        p->ipc_handles = ipc_handle_table_create();
+        if (!p->ipc_handles) return -VE_NOMEM;
+    }
 
     /* Validate handle range */
     if (handle < 0 || handle >= IPC_MAX_HANDLES) {
