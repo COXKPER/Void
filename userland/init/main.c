@@ -46,6 +46,20 @@ int main(void) {
     const char exit_msg[] = "[init] exiting with status 42\r\n";
     sys_write(1, exit_msg, sizeof(exit_msg) - 1);
 
+    /* Test sys_read (non-blocking): verify it doesn't crash. */
+    const char read_test[] = "[init] testing sys_read(0)...\r\n";
+    sys_write(1, read_test, sizeof(read_test) - 1);
+
+    char input[32];
+    long nread = sys_read(0, input, sizeof(input));
+    if (nread > 0) {
+        const char got_input[] = "[init] received input\r\n";
+        sys_write(1, got_input, sizeof(got_input) - 1);
+    } else {
+        const char no_input[] = "[init] no input (expected; non-blocking)\r\n";
+        sys_write(1, no_input, sizeof(no_input) - 1);
+    }
+
     /* Exit with status 42 (known value for testing). */
     sys_exit(42);
 
