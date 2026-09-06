@@ -72,12 +72,14 @@ kernel/
 │   └── sched.c        # Preemptive round-robin scheduler (kernel + user threads)
 ├── syscall/
 │   └── syscall.c      # MSR setup, user-pointer validation, syscall dispatcher
+├── vfs/
+│   └── voidfs.c       # Kernel VFS: embedded readonly tree + fd-layer syscalls
 ├── main.c             # kernel_main(): orchestrates init sequence
 └── linker.ld          # Higher-half linker script (KERNEL_VBASE=0xFFFFFFFF80000000)
 
 userland/
 ├── include/
-│   └── void.h              # libvoid syscall wrappers (write, getpid, sched_yield, exit)
+│   └── void.h              # libvoid syscall wrappers (write/read/open/close/lseek/cwd/fork/…)
 ├── crt0.S                  # Minimal entry point: stack alignment + main() + exit
 ├── init/
 │   ├── main.c              # First init process: calls getpid/write/sched_yield/exit
@@ -86,6 +88,13 @@ userland/
 ├── user.ld                 # Linker script for Phase 4 test ELF (elf_test.elf)
 ├── user_packed.ld          # Linker script for .text+.rodata in same page (tests permission union)
 ├── elf_test.c              # Phase 5A test executable (Phase 4 compatibility)
+├── ipc_test.c              # Phase 7 IPC test (11 checks)
+├── forkexec_test.c         # Phase 8 fork/exec/lifecycle test (checks=0xFF)
+├── vfs_test.c              # Phase 10 VFS test (20+ checks, [VFS] Done: 0 fail)
+└── services/               # Phase 9 user-space services + their clients
+    ├── calc.c              # first service (named endpoint, request→reply over IPC)
+    ├── srv_test.c          # client with svc_lookup
+    └── lifecycle_test.c    # register → discover → exit → registry-clean → lookup-fails
 └── (no VFS, fork/execve, dynamic linking yet)
 
 scripts/
@@ -198,9 +207,21 @@ limine/                # Vendored Limine v9.6.7 (git submodule, DO NOT MODIFY)
 - 🐛 **Found and fixed a pre-existing kernel heap bug** (see design decision #17): `kmalloc`/`split_block` left the allocated block linked into the freelist → freelist cycles under churn → `coalesce()` livelock. Fix: unlink the winner before splitting (both paths); `split_block` deleted. ≥8 consecutive QEMU runs green post-fix.
 - ⚠️ Lux classification: BRING (service==named endpoint, registry-as-directory, handle-mint as the single privilege), PORT (message framing), REFERENCE (per-endpoint uid/gid auth — deferred, needs a user model), SKIP (in-Lux "service context"/capability trees — overbuild)
 
-**Phase 10 — Next (NOT STARTED):**
-- VFS layer + real file descriptors (open/read/close)
+**Phase 10 — Kernel VFS / File Layer (COMPLETE, fourth merger milestone):**
+- ✅ Embedded readonly in-memory filesystem (`kernel/vfs/voidfs.c`): a vnode tree rooted at "/" (hello.txt / test.txt / etc/version.txt), heap-built once at boot, with full path resolution
+- ✅ Syscalls 2/3/8/79/80/89/318: `open`, `close`, `lseek`, `getcwd`, `chdir`, `readdir`, `stat` (Linux x86_64 numbers). `read(0)`/`write(1)` now dispatch on fd type: FD_SERIAL (console) vs FD_VFS (embedded tree)
+- ✅ fd table → open file → filesystem node → backend layering: per-process `fd_entry_t` (FD_VFS) holds a `vfs_file_t` (node + position + per-open id + refcount). VFS fds start at 3, below that the console
+- ✅ Path/cwd resolution: absolute + relative (cwd-prefix, the Lux recipe), `.`, `..`, interior/double slashes, trailing-slash-is-ENOTDIR. `getcwd`/`chdir` normalize/rebuild the absolute path root-down
+- ✅ Process integration: `cwd` field on `process_t` (inherited by fork, preserved by exec). `vfs_close_process_fds()` on exit/destroy so no file object leaks; fork deep-copies the fd table and bumps the shared `vfs_file_t` refcount
+- ✅ User-pointer safety: every path/buffer validated via `user_range_ok`/`copy_{from,to}_user` (the same HHDM walk as IPC), returns -VE_* errno (ENOENT/EACCES/EISDIR/ENOTDIR/ENAMETOOLONG/EBADF…)
+- ✅ `vfs_test`: 20+ deterministic checks in QEMU (open/read/EOF/lseek/ENOENT/EACCES/dir readdir/ENOTDIR/close/EBADF/cwd flow/relative+`..`/trailing-slash) — `[VFS test] Done: 0 fail(s)` ×3
+- ✅ Full regression (IPC 11/11, fork/exec checks=0xFF, service registry, lifecycle, init status 42) all green ×3, no panics
+- ⚠️ Design notes: the tree is readonly (no mounts/permissions/hardlinks by spec). The fd/VFS interface is deliberately shaped so the tree can later become a *user-space filesystem service* behind IPC — swap the backend, not the fd table or syscall surface
+- 🐛 **Lux provenance finding**: Lux's kernel has **no** VFS — every file syscall (`file.c`) is a `requestServer()` IPC forward to a user-space server (lumen). There is no in-kernel vnode/backend/path-walker to port. So Void's vnode/tree/path-resolution is Void-native; what was *actually ported* from Lux is the fd-slot discipline (`io.c` openIO/closeIO), the cwd-prefix recipe (`cwd.c`), the per-open `FileDescriptor{position,refcount,id}` object shape (`file.c`), and the kernel-side cwd field. Lux is MIT; attribution is in `kernel/vfs/voidfs.c`'s header
+
+**Phase 11 — Next (NOT STARTED):**
 - brk/mmap for user heap
+- Writable backend / real FS (or user-space VFS service behind IPC)
 - Dynamic linking, libc services
 - Signals (deferred per Phase 8 spec)
 
@@ -241,3 +262,5 @@ limine/                # Vendored Limine v9.6.7 (git submodule, DO NOT MODIFY)
 17. **Services are named IPC endpoints; the registry is a directory, not a second IPC** (`kernel/svc/svc.c`): A "service" has exactly one meaning in Void — a process that registered a name for one of its own endpoints. The kernel registry maps name → `(owner_pid, endpoint_id)` in a fixed array (`SVC_MAX_SERVICES=64`, free slot marked `name[0]=='\0'`). Transport stays entirely on the Phase 7 endpoint/handle data plane; the registry holds *addresses only*. `sr_register`/`sr_unregister` (68/69) only accept an endpoint handle the caller owns with a live endpoint in the IPC registry (`svc_check_endpoint`), so a name can only ever name the registering process's endpoint. `sr_lookup` (70) returns a fresh handle — it is the **single** privilege that creates a handle to another process's endpoint, granted only for the exact `(owner_pid, endpoint_id)` a server registered. `ipc_connect` (66, the Lux data-plane pattern) is the same mint operation from a raw pid+endpoint-id and re-validates endpoint liveness in the IPC registry at call time, so a minted handle can never outlive the endpoint it names (the destroy/revoke race). Lifecycle cleanup is total on both ends of a service's life: `svc_cleanup_owner()` on process exit/destroy, `svc_on_endpoint_close()` on owner `ipc_close` — a dead service is never discoverable. Errors are `SVC_E_*`, already-negative, returned verbatim. Security boundaries: no cross-memory paths (all user pointers HHDM-validated), no forged handles (liveness re-checked at mint time), and the handle-mint is the only new privilege — there is deliberately no per-service capability system (a server that registered is already serving; another server doing the same is the model). **Why so minimal**: the spec's binding constraint was "do not turn Void into Lux" — Lux ships a full service framework; Void takes only the two architectural insights (service == named endpoint, minted handle carries the authorization) and implements them as ~200 lines against the existing IPC. **Lux classification**: BRING — service==named endpoint, registry-as-directory, handle-mint as the single privilege; PORT — message framing/request-reply shape; REFERENCE — per-endpoint uid/gid auth (deferred: no user model yet, would be dead code); SKIP — in-Lux "capability/service-context" trees (overbuild). **Future migration**: when VFS lands, names become `/Services/<name>` nodes; when a user model lands, permission checks attach to the mint operation, not to transport.
 
 18. **The kernel heap allocator had a freelist-cycle bug (found + fixed in Phase 9)**: `kmalloc`'s first-fit path called `split_block()` while the winning block was still linked into the freelist, leaving the allocated block — and later its remainder chain — reachable twice. Under churn (Phase 9's many short-lived processes allocating/freeing 768-byte handle tables and 8216-byte endpoints) two references to the same block could both be freed and re-split until the list became cyclic and `coalesce()` livelocked in the timer interrupt. Fix: unlink the winner from the freelist **before** splitting, in both the first-fit and grow paths; `split_block()` deleted. `coalesce()` keeps a cycle guard that converts a recurrence from a hang into a `kpanic` (prefer a loud panic over a silent livelock). Not fixed with refcounting or SLABs — a correct first-fit is the boring, sufficient fix. Optional escalation was originally noted for a slab allocator when the workload needs it (it does not today).
+
+19. **The VFS layer ports Lux's *fd discipline*, not a vnode tree — because Lux has no vnode tree to port** (`kernel/vfs/voidfs.c`): The spec asked to "port the useful parts of Lux's VFS." Reading Lux's kernel, every file syscall in `file.c` is a `requestServer()` IPC forward to a user-space server (lumen) over a socket; there is no in-kernel path-walker, superblock, mount table, or filesystem backend. So a literal "port" is impossible — and inventing a full in-kernel VFS on top would be exactly the kind of unnecessary complexity the spec forbade ("do not add a disk driver just because a filesystem exists in Lux"). **What was actually taken from Lux** (MIT, attributed in `voidfs.c`): the per-process IO/fd-slot allocation discipline (`io.c`'s `openIO`/`closeIO` → Void's fd slot scan from 3), the cwd-prefix relative-path recipe (`cwd.c` — `/` prefix or `cwd + '/' + path`), the `FileDescriptor{position, refcount, id}` open-object shape (`file.c` → Void's `vfs_file_t`), and the kernel-side `cwd` field on the process (`sched.c`). **Everything else is Void-native**: the vnode tree, the `/ . ..` path resolver, the `readdir` cursor, the errno surface, and the fd-type dispatch in `sys_read`/`sys_write`. **Why an embedded readonly tree instead of nothing**: Phase 10's deliverable is "a clean filesystem abstraction that can later become a user-space filesystem service behind IPC." The fd table → open file → node → backend layering is that abstraction; the tree is the temporary backend. The spec explicitly encouraged an initramfs/embedded/in-memory simplification — so the tree is heap-static, readonly, with no mounts/permissions/hardlinks, and `write()` is `-EACCES`. **The user-space-VFS seam**: when the VFS service lands, only the backend changes — `vfs_resolve_abs`/the tree builder are replaced by client calls over IPC, while `fd_entry_t`, the `FD_VFS` type, the syscall numbers, and the `sys_vfs_*` dispatch all stay. **Lux classification**: BRING — fd-slot discipline + open-object shape (id + position + refcount); PORT — cwd-prefix recipe, kernel cwd field; SKIP — the entire Lux "VFS" is an IPC server, which Void will *become* rather than embed.
