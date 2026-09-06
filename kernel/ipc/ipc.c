@@ -10,6 +10,7 @@
 #include <syscall/syscall.h>
 #include <void/boot.h>
 #include <dev/serial.h>
+#include <mm/kheap.h>
 
 /* ── Global Endpoint Registry ────────────────────────────────────── */
 ipc_endpoint_registry_entry_t ipc_endpoint_registry[IPC_MAX_TOTAL_ENDPOINTS];
@@ -29,26 +30,34 @@ ipc_endpoint_t *ipc_endpoint_lookup(pid_t_v owner_pid, uint32_t endpoint_id) {
 }
 
 int32_t ipc_endpoint_register(ipc_endpoint_t *ep, pid_t_v owner_pid, uint32_t endpoint_id) {
-    if (ipc_endpoint_registry_count >= IPC_MAX_TOTAL_ENDPOINTS) {
-        return -VE_NOMEM;
+    /* Reuse a released slot first, then grow the high-water mark. */
+    uint32_t i;
+    for (i = 0; i < ipc_endpoint_registry_count; i++)
+        if (ipc_endpoint_registry[i].endpoint == NULL) break;
+    if (i == ipc_endpoint_registry_count) {
+        if (i >= IPC_MAX_TOTAL_ENDPOINTS) return -VE_NOMEM;
+        ipc_endpoint_registry_count++;
     }
 
-    ipc_endpoint_registry_entry_t *entry = &ipc_endpoint_registry[ipc_endpoint_registry_count];
-    entry->endpoint = ep;
-    entry->owner_pid = owner_pid;
-    entry->endpoint_id = endpoint_id;
-    ipc_endpoint_registry_count++;
-
+    ipc_endpoint_registry[i].endpoint    = ep;
+    ipc_endpoint_registry[i].owner_pid   = owner_pid;
+    ipc_endpoint_registry[i].endpoint_id = endpoint_id;
     return 0;
+}
+
+/* Free one endpoint and release its registry slot to the free pool.
+ * ponytail: registry_count is a high-water mark; slots are reused via the
+ * NULL scan in ipc_endpoint_register. */
+static void endpoint_release(ipc_endpoint_registry_entry_t *e) {
+    kfree(e->endpoint);
+    e->endpoint = NULL;
 }
 
 void ipc_endpoint_unregister_by_owner(pid_t_v owner_pid) {
     for (uint32_t i = 0; i < ipc_endpoint_registry_count; i++) {
         if (ipc_endpoint_registry[i].endpoint != NULL &&
-            ipc_endpoint_registry[i].owner_pid == owner_pid) {
-            /* Mark as unregistered but keep entry for now (simplified cleanup) */
-            ipc_endpoint_registry[i].endpoint = NULL;
-        }
+            ipc_endpoint_registry[i].owner_pid == owner_pid)
+            endpoint_release(&ipc_endpoint_registry[i]);
     }
 }
 

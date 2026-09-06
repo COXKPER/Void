@@ -14,6 +14,7 @@
 #define VOID_IPC_H 1
 
 #include <void/types.h>
+#include <proc/process.h>
 
 /* ── Syscall numbers (Void x86_64 compatible) ─────────────────────── */
 #define SYS_ipc_endpoint_create  62
@@ -83,6 +84,6 @@ ipc_handle_table_t *ipc_handle_table_create(void);
 void ipc_handle_table_destroy(ipc_handle_table_t *table);
 
 /* Unregister all endpoints owned by a process (cleanup on exit). */
-void ipc_endpoint_unregister_by_owner(uint32_t owner_pid);
+void ipc_endpoint_unregister_by_owner(pid_t_v owner_pid);
 
 #endif /* VOID_IPC_H */

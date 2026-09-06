@@ -17,12 +17,15 @@
 void print_test(const char *name, int result) {
     const char *status = (result == 0) ? "PASS" : "FAIL";
     sys_write(1, "[IPC] ", 6);
-    sys_write(1, name, 0);
-    while (*name) {
-        sys_write(1, name++, 1);
-    }
+
+    /* Write the name */
+    uint64_t len = 0;
+    const char *p = name;
+    while (*p++) len++;
+    sys_write(1, name, len);
+
     sys_write(1, ": ", 2);
-    sys_write(1, status, result ? 4 : 4);
+    sys_write(1, status, 4);
     sys_write(1, "\n", 1);
 }
 

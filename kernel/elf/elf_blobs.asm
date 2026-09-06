@@ -33,3 +33,10 @@ global elf_init_end
 elf_init_start:
     incbin "build/userland/init.elf"
 elf_init_end:
+
+align 4096
+global elf_ipc_test_start
+global elf_ipc_test_end
+elf_ipc_test_start:
+    incbin "build/userland/ipc_test.elf"
+elf_ipc_test_end:

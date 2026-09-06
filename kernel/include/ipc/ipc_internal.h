@@ -7,6 +7,7 @@
 
 #include <void/types.h>
 #include <ipc/ipc.h>
+#include <proc/process.h>
 
 /* ── IPC Endpoint (kernel-side message queue) ────────────────────── */
 typedef struct ipc_endpoint {

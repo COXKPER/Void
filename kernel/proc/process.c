@@ -18,6 +18,7 @@
 #include <mm/vmm.h>
 #include <void/boot.h>
 #include <dev/serial.h>
+#include <ipc/ipc.h>
 
 static process_t proc_table[MAX_PROCESSES];
 static pid_t_v   next_pid;
@@ -101,6 +102,9 @@ process_t *process_alloc(pid_t_v parent) {
         p->fds[1].type = FD_SERIAL;
         p->fds[2].type = FD_SERIAL;
 
+        /* IPC handle table: allocated lazily on first endpoint creation */
+        p->ipc_handles = NULL;
+
         return p;
     }
     return NULL;   /* table full */
@@ -175,6 +179,11 @@ void process_destroy(process_t *p) {
         pmm_free_frame(pdpt_phys);
         pml4[i] = 0;
     }
+
+    /* Drop IPC state so no other process can reach a stale endpoint. */
+    ipc_endpoint_unregister_by_owner(p->pid);
+    ipc_handle_table_destroy(p->ipc_handles);
+    p->ipc_handles = NULL;
 
     pmm_free_frame(p->cr3);
     p->cr3   = 0;
@@ -345,6 +354,10 @@ isr_frame_t *process_exit_current(isr_frame_t *frame, int32_t status) {
         pmm_free_frame(p->umap[i].phys);
     }
     p->umap_count = 0;
+
+    /* Endpoints die with the process, not at reap time: a zombie must not
+     * keep accepting messages nobody will ever read. */
+    ipc_endpoint_unregister_by_owner(p->pid);
 
     /* Wake a parent blocked in wait(). */
     process_t *parent = process_get(p->ppid);

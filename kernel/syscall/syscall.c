@@ -65,7 +65,7 @@ void syscall_set_kernel_stack(uint64_t rsp) {
  * a process from naming a kernel page it happens to know about. */
 #define USER_LIMIT 0x0000800000000000ULL
 
-static bool user_range_ok(process_t *p, uint64_t base, uint64_t len, bool need_write) {
+bool user_range_ok(process_t *p, uint64_t base, uint64_t len, bool need_write) {
     if (!p || len == 0) return false;
     if (base >= USER_LIMIT) return false;
     if (len > USER_LIMIT) return false;
@@ -87,7 +87,7 @@ static bool user_range_ok(process_t *p, uint64_t base, uint64_t len, bool need_w
 /* Copy from user space into a kernel buffer through the HHDM, one page at
  * a time.  Reading through the HHDM rather than the user virtual address
  * means the copy cannot be redirected by a concurrent remap. */
-static bool copy_from_user(process_t *p, void *dst, uint64_t usrc, uint64_t len) {
+bool copy_from_user(process_t *p, void *dst, uint64_t usrc, uint64_t len) {
     if (!user_range_ok(p, usrc, len, false)) return false;
 
     uint8_t *out = (uint8_t *)dst;
@@ -112,7 +112,7 @@ static bool copy_from_user(process_t *p, void *dst, uint64_t usrc, uint64_t len)
 /* ── copy_to_user ────────────────────────────────────────────────────────
  * Write to user space via HHDM, one page at a time. Validates every page
  * in the range before writing. */
-static bool copy_to_user(process_t *p, uint64_t udst, const void *src, uint64_t len) {
+bool copy_to_user(process_t *p, uint64_t udst, const void *src, uint64_t len) {
     if (!user_range_ok(p, udst, len, true)) return false;
 
     const uint8_t *in = (const uint8_t *)src;

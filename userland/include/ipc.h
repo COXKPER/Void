@@ -27,20 +27,22 @@ static inline long ipc_endpoint_create(void) {
 
 static inline long ipc_send(int handle, uint32_t tag, const void *data, uint32_t len) {
     long ret;
+    register uint64_t r10 __asm__("r10") = (uint64_t)len;
     __asm__ volatile ("syscall"
                      : "=a"(ret)
                      : "a"(IPC_SYS_SEND), "D"((long)handle), "S"((long)tag),
-                       "d"((long)data), "r"((long)len)
+                       "d"((long)data), "r"(r10)
                      : "rcx", "r11", "memory");
     return ret;
 }
 
 static inline long ipc_recv(int handle, uint32_t *tag, void *data, uint32_t len) {
     long ret;
+    register uint64_t r10 __asm__("r10") = (uint64_t)len;
     __asm__ volatile ("syscall"
                      : "=a"(ret)
                      : "a"(IPC_SYS_RECV), "D"((long)handle), "S"((long)tag),
-                       "d"((long)data), "r"((long)len)
+                       "d"((long)data), "r"(r10)
                      : "rcx", "r11", "memory");
     return ret;
 }
