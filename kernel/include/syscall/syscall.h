@@ -31,16 +31,23 @@ typedef struct process process_t;
 /* ── syscall numbers (Linux x86_64 compatible) ───────────────────────── */
 #define SYS_read                 0
 #define SYS_write                1
+#define SYS_open                 2    /* Linux x86_64 open(2)           */
+#define SYS_close                3
+#define SYS_lseek                8
 #define SYS_sched_yield          24
 #define SYS_getpid               39
 #define SYS_exit                 60
 #define SYS_wait4                61
+#define SYS_execve               59   /* Linux x86_64 number            */
 #define SYS_ipc_endpoint_create  62
 #define SYS_ipc_send             63
 #define SYS_ipc_recv             64
 #define SYS_ipc_close            65
-#define SYS_execve                59   /* Linux x86_64 number            */
-#define SYS_fork                  67   /* no Linux index; Void slot      */
+#define SYS_fork                 67   /* no Linux index; Void slot      */
+#define SYS_getcwd               79   /* Linux x86_64 getcwd(2)         */
+#define SYS_chdir                80
+#define SYS_readdir              89   /* Void-native (no Linux dirent)  */
+#define SYS_stat                318   /* Linux newfstatat shape         */
 
 /* ── errno values (negated on return, POSIX names) ───────────────────── */
 #define VE_PERM     1    /* EPERM  */
@@ -51,6 +58,13 @@ typedef struct process process_t;
 #define VE_FAULT   14    /* EFAULT */
 #define VE_INVAL   22    /* EINVAL */
 #define VE_NOSYS   38    /* ENOSYS */
+#define VE_NAMETOOLONG 36 /* ENAMETOOLONG */
+#define VE_ISDIR  21    /* EISDIR */
+#define VE_NOTDIR 20    /* ENOTDIR */
+#define VE_ACCES  13    /* EACCES */
+#define VE_SPACE  28    /* ENOSPC  */
+#define VE_EXIST  17    /* EEXIST  */
+#define VE_BUSY   16    /* EBUSY   */
 
 /* Marker placed in isr_frame_t.vector for frames built by syscall_entry,
  * so the scheduler and fault handlers can tell a syscall frame from a

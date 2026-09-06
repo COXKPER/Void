@@ -21,6 +21,7 @@
 #include <ipc/ipc.h>
 #include <ipc/ipc_internal.h>   /* handle table layout, for fork's deep copy */
 #include <svc/svc_internal.h>   /* service registry owner cleanup on exit   */
+#include <void/voidfs.h>        /* VFS fd-table teardown on exit/destroy    */
 
 static process_t proc_table[MAX_PROCESSES];
 static pid_t_v   next_pid;
@@ -69,6 +70,8 @@ void process_init(void) {
     k->umap_count  = 0;
     for (int i = 0; i < MAX_FDS; i++)
         k->fds[i].type = FD_NONE;
+    k->cwd[0] = '/';
+    k->cwd[1] = '\0';
 
     if (k->thread) k->thread->proc = k;
 
@@ -103,6 +106,10 @@ process_t *process_alloc(pid_t_v parent) {
         p->fds[0].type = FD_SERIAL;
         p->fds[1].type = FD_SERIAL;
         p->fds[2].type = FD_SERIAL;
+
+        /* every process starts in the root directory */
+        p->cwd[0] = '/';
+        p->cwd[1] = '\0';
 
         /* IPC handle table: allocated lazily on first endpoint creation */
         p->ipc_handles = NULL;
@@ -196,6 +203,9 @@ void process_destroy(process_t *p) {
     if (!p || p->state == PROC_UNUSED) return;
 
     process_destroy_user_space(p);
+
+    /* Drop VFS descriptors so no file object leaks. */
+    vfs_close_process_fds(p);
 
     /* Drop IPC state so no other process can reach a stale endpoint. */
     ipc_endpoint_unregister_by_owner(p->pid);
@@ -425,9 +435,15 @@ isr_frame_t *process_fork_current(isr_frame_t *frame) {
         c->ipc_handles = NULL;
     }
 
-    /* ── dup the fd table ────────────────────────────────────────────── */
+    /* ── dup the fd table ──────────────────────────────────────────────
+     * For FD_VFS the `object` is a shared heap vfs_file_t: the child holds
+     * a second reference to the *same* open file (POSIX dup semantics), so
+     * bump its refcount — close in either process must not free the object
+     * while the other still has it open. */
     for (int f = 0; f < MAX_FDS; f++) {
         c->fds[f] = p->fds[f];
+        if (c->fds[f].type == FD_VFS && c->fds[f].object)
+            vfs_file_ref_inc(c->fds[f].object);
     }
 
     /* ── thread: fresh kernel stack + copy of the frame ──────────────── */
@@ -605,6 +621,10 @@ isr_frame_t *process_exit_current(isr_frame_t *frame, int32_t status) {
         pmm_free_frame(p->umap[i].phys);
     }
     p->umap_count = 0;
+
+    /* VFS descriptors die with the process so no file object leaks — each
+     * open handle is a heap allocation that must be returned. */
+    vfs_close_process_fds(p);
 
     /* Endpoints die with the process, not at reap time: a zombie must not
      * keep accepting messages nobody will ever read.  So do the service

@@ -30,19 +30,24 @@ typedef enum {
     PROC_ZOMBIE,       /* exited, status not yet reaped by parent       */
 } proc_state_t;
 
-/* ── file descriptor abstraction (backing objects come later) ─────────
- * Kept deliberately thin: a type tag plus an opaque handle.  The VFS
- * and pipe/IPC layers will fill `object` in later phases. */
+/* ── file descriptor abstraction ───────────────────────────────────────
+ * A per-process slot holding an open handle.  FD_SERIAL is the console
+ * (stdin/stdout/stderr); FD_VFS is an open file/dir served by the
+ * kernel VFS (voidfs.c), whose `object` points at an VFS file object. */
 typedef enum {
     FD_NONE = 0,
     FD_SERIAL,        /* console on COM1 — stdin/stdout/stderr for now  */
+    FD_VFS,           /* kernel VFS file/dir (object = vfs_file_t)      */
 } fd_type_t;
 
 typedef struct {
-    fd_type_t type;
-    void     *object;  /* NULL for FD_SERIAL */
-    uint64_t  offset;
+    fd_type_t   type;
+    void       *object;  /* NULL for FD_SERIAL */
+    uint64_t    offset;
 } fd_entry_t;
+
+/* sys_read on a VFS fd uses a small staging buffer */
+#define VFS_STAGING_SIZE 256
 
 /* ── user address space layout ───────────────────────────────────────── */
 #define USER_STACK_TOP   0x0000700000000000ULL   /* grows down          */
@@ -65,6 +70,11 @@ typedef struct process {
 
     /* per-process descriptor table */
     fd_entry_t    fds[MAX_FDS];
+
+    /* current working directory (absolute, no trailing slash; "/" for root).
+     * Inherited by fork, unchanged by exec (Lux's cwd field follows its
+     * process). */
+    char          cwd[512];
 
     /* user memory bookkeeping: pages we allocated, so exit can free them.
      * ponytail: flat list of (virt,phys) pairs, 64 max; replace with a

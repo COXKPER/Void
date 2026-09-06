@@ -15,12 +15,23 @@
 /* ── syscall numbers (Linux x86_64 compatible) ─────────────────────── */
 #define SYS_read        0
 #define SYS_write       1
+#define SYS_open        2
+#define SYS_close       3
+#define SYS_lseek       8
 #define SYS_sched_yield 24
 #define SYS_getpid      39
 #define SYS_execve      59
 #define SYS_exit        60
 #define SYS_wait4       61
 #define SYS_fork        67      /* Void slot (no Linux index)          */
+#define SYS_getcwd      79
+#define SYS_chdir       80
+#define SYS_readdir     89
+
+/* ── open(2) flags ──────────────────────────────────────────────────── */
+#define O_RDONLY 0
+#define O_WRONLY 1
+#define O_RDWR   2
 
 /* ── syscall wrappers ───────────────────────────────────────────────── */
 
@@ -40,6 +51,16 @@ static inline long syscall1(long num, long arg0) {
     __asm__ volatile ("syscall"
                      : "=a"(ret)
                      : "a"(num), "D"(arg0)
+                     : "rcx", "r11", "memory");
+    return ret;
+}
+
+/* long syscall2(long num, long arg0, long arg1) */
+static inline long syscall2(long num, long arg0, long arg1) {
+    long ret;
+    __asm__ volatile ("syscall"
+                     : "=a"(ret)
+                     : "a"(num), "D"(arg0), "S"(arg1)
                      : "rcx", "r11", "memory");
     return ret;
 }
@@ -82,6 +103,30 @@ static inline long sys_wait4(long pid, long *ustatus, long options) {
 
 static inline long sys_execve(const char *path, long argv, long envp) {
     return syscall3(SYS_execve, (long)path, argv, envp);
+}
+
+static inline long sys_open(const char *path, int flags) {
+    return syscall2(SYS_open, (long)path, flags);
+}
+
+static inline long sys_close(int fd) {
+    return syscall1(SYS_close, fd);
+}
+
+static inline long sys_lseek(int fd, long offset, int whence) {
+    return syscall3(SYS_lseek, fd, offset, whence);
+}
+
+static inline long sys_getcwd(char *buf, size_t size) {
+    return syscall2(SYS_getcwd, (long)buf, size);
+}
+
+static inline long sys_chdir(const char *path) {
+    return syscall1(SYS_chdir, (long)path);
+}
+
+static inline long sys_readdir(int fd, char *name) {
+    return syscall2(SYS_readdir, fd, (long)name);
 }
 
 static inline void sys_exit(int status) {
