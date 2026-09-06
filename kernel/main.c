@@ -102,7 +102,9 @@ static void init_thread(void *arg) {
     kprintf("[init] Userland process pid %u running.\n\r", (uint64_t)init_pid);
 
     /* Reap init process. process_try_reap returns 0 while the child is still
-     * running, so yield and retry rather than spinning on the CPU. */
+     * running, so yield and retry rather than spinning on the CPU.
+     * -VE_CHILD means the pid-0 idle reaper already reclaimed it — a normal
+     * completion, not an error, so treat it as success. */
     while (1) {
         int32_t status = 0;
         pid_t_v r = process_try_reap(0, init_pid, &status);
@@ -111,7 +113,11 @@ static void init_thread(void *arg) {
                     (uint64_t)(uint32_t)status);
             break;
         } else if (r < 0) {
-            kprintf("[init] Reap error: %d\n\r", (int)r);
+            if (r == -VE_CHILD) {
+                kprintf("[init] Init process already reaped by idle loop.\n\r");
+            } else {
+                kprintf("[init] Reap error: %d\n\r", (int)r);
+            }
             break;
         } else {
             sched_yield();
