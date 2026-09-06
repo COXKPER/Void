@@ -13,6 +13,7 @@
 #define IPC_SYS_SEND             63
 #define IPC_SYS_RECV             64
 #define IPC_SYS_CLOSE            65
+#define IPC_SYS_CONNECT          66        /* data-plane half of discovery */
 
 /* Syscall wrappers */
 
@@ -52,6 +53,19 @@ static inline long ipc_close(int handle) {
     __asm__ volatile ("syscall"
                      : "=a"(ret)
                      : "a"(IPC_SYS_CLOSE), "D"((long)handle)
+                     : "rcx", "r11", "memory");
+    return ret;
+}
+
+/* Connect a local handle to a remote process's endpoint (server-side reply /
+ * push handle, or the complement of sr_lookup).  target_pid is passed in
+ * arg1 (RSI); the endpoint is the service registry's endpoint id. */
+static inline long ipc_connect(uint32_t target_pid, uint32_t endpoint_id) {
+    long ret;
+    __asm__ volatile ("syscall"
+                     : "=a"(ret)
+                     : "a"(IPC_SYS_CONNECT), "D"((long)target_pid),
+                       "S"((long)endpoint_id)
                      : "rcx", "r11", "memory");
     return ret;
 }

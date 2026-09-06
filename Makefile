@@ -31,7 +31,7 @@ override UCFLAGS := -std=c2x -Wall -Wextra -O2 \
 
 override ULDFLAGS := -nostdlib -static -z max-page-size=0x1000 -z noexecstack
 
-UELF := build/userland/elf_test.elf build/userland/elf_packed.elf build/userland/init.elf build/userland/ipc_test.elf build/userland/forkexec_test.elf
+UELF := build/userland/elf_test.elf build/userland/elf_packed.elf build/userland/init.elf build/userland/ipc_test.elf build/userland/forkexec_test.elf build/userland/calc.elf build/userland/srv_test.elf build/userland/lifecycle_test.elf
 
 CSRC := $(shell find kernel -name '*.c')
 ASMSRC := $(shell find kernel -name '*.asm')
@@ -74,6 +74,27 @@ build/userland/forkexec_test.c.o: userland/forkexec_test.c
 	$(CC) $(UCFLAGS) -c $< -o $@
 
 build/userland/forkexec_test.elf: build/userland/forkexec_test.c.o build/userland/crt0.asm.o userland/user.ld
+	$(LD) $(ULDFLAGS) -T userland/user.ld build/userland/crt0.asm.o $< -o $@
+
+build/userland/calc.c.o: userland/services/calc.c
+	@mkdir -p $(dir $@)
+	$(CC) $(UCFLAGS) -c $< -o $@
+
+build/userland/calc.elf: build/userland/calc.c.o build/userland/crt0.asm.o userland/user.ld
+	$(LD) $(ULDFLAGS) -T userland/user.ld build/userland/crt0.asm.o $< -o $@
+
+build/userland/srv_test.c.o: userland/services/srv_test.c
+	@mkdir -p $(dir $@)
+	$(CC) $(UCFLAGS) -c $< -o $@
+
+build/userland/srv_test.elf: build/userland/srv_test.c.o build/userland/crt0.asm.o userland/user.ld
+	$(LD) $(ULDFLAGS) -T userland/user.ld build/userland/crt0.asm.o $< -o $@
+
+build/userland/lifecycle_test.c.o: userland/services/lifecycle_test.c
+	@mkdir -p $(dir $@)
+	$(CC) $(UCFLAGS) -c $< -o $@
+
+build/userland/lifecycle_test.elf: build/userland/lifecycle_test.c.o build/userland/crt0.asm.o userland/user.ld
 	$(LD) $(ULDFLAGS) -T userland/user.ld build/userland/crt0.asm.o $< -o $@
 
 # incbin reads the linked user ELFs, so they must exist before nasm runs.
