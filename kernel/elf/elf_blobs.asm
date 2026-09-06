@@ -26,3 +26,10 @@ global elf_packed_end
 elf_packed_start:
     incbin "build/userland/elf_packed.elf"
 elf_packed_end:
+
+align 4096
+global elf_init_start
+global elf_init_end
+elf_init_start:
+    incbin "build/userland/init.elf"
+elf_init_end:

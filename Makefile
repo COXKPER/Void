@@ -27,11 +27,11 @@ override ASMFLAGS := -f elf64 -g
 override UCFLAGS := -std=c2x -Wall -Wextra -O2 \
 	-ffreestanding -fno-stack-protector -fno-stack-check -fno-pic -fno-pie \
 	-mno-red-zone -mno-mmx -mno-sse -mno-sse2 \
-	-m64 -march=x86-64
+	-m64 -march=x86-64 -Iuserland/include
 
 override ULDFLAGS := -nostdlib -static -z max-page-size=0x1000 -z noexecstack
 
-UELF := build/userland/elf_test.elf build/userland/elf_packed.elf
+UELF := build/userland/elf_test.elf build/userland/elf_packed.elf build/userland/init.elf
 
 CSRC := $(shell find kernel -name '*.c')
 ASMSRC := $(shell find kernel -name '*.asm')
@@ -50,6 +50,17 @@ build/userland/elf_test.elf: build/userland/elf_test.c.o userland/user.ld
 
 build/userland/elf_packed.elf: build/userland/elf_test.c.o userland/user_packed.ld
 	$(LD) $(ULDFLAGS) -T userland/user_packed.ld $< -o $@
+
+build/userland/init.c.o: userland/init/main.c userland/crt0.S
+	@mkdir -p $(dir $@)
+	$(CC) $(UCFLAGS) -c userland/init/main.c -o $@
+
+build/userland/crt0.asm.o: userland/crt0.S
+	@mkdir -p $(dir $@)
+	$(CC) $(UCFLAGS) -c $< -o $@
+
+build/userland/init.elf: build/userland/init.c.o build/userland/crt0.asm.o userland/init.ld
+	$(LD) $(ULDFLAGS) -T userland/init.ld build/userland/crt0.asm.o build/userland/init.c.o -o $@
 
 # incbin reads the linked user ELFs, so they must exist before nasm runs.
 build/kernel/elf/elf_blobs.asm.o: $(UELF)

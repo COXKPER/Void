@@ -26,6 +26,7 @@ extern const uint8_t user_bad_start[],  user_bad_end[];
 /* ELF test images (kernel/elf/elf_blobs.asm) */
 extern const uint8_t elf_test_start[], elf_test_end[];
 extern const uint8_t elf_packed_start[], elf_packed_end[];
+extern const uint8_t elf_init_start[], elf_init_end[];
 
 /* ELF self-check (kernel/elf/elf_selftest.c) */
 uint32_t elf_selftest(const void *image, uint64_t size);
@@ -80,42 +81,42 @@ static void test_address_space_isolation(void) {
     process_destroy(b);
 }
 
-/* ── init thread: spawns the Ring-3 tests and reaps them ─────────────────
- * Runs as a kernel thread owned by pid 0, standing in for the future
- * userspace init process. */
+/* ── init thread: spawns the init process and reaps it ──────────────────
+ * Runs as a kernel thread owned by pid 0, spawning the first real userland
+ * ELF process and waiting for it to exit. */
 static void init_thread(void *arg) {
     (void)arg;
 
-    kprintf("\n\r[init] spawning ring-3 processes...\n\r");
+    kprintf("\n\r[init] spawning ELF init process...\n\r");
 
-    pid_t_v p1 = process_spawn_user(user_prog_start,
-                                    (uint64_t)(user_prog_end - user_prog_start), 0);
-    pid_t_v p2 = process_spawn_user(user_prog_start,
-                                    (uint64_t)(user_prog_end - user_prog_start), 0);
-    pid_t_v p3 = process_spawn_user(user_bad_start,
-                                    (uint64_t)(user_bad_end - user_bad_start), 0);
+    pid_t_v init_pid = process_spawn_elf(elf_init_start,
+                                        (uint64_t)(elf_init_end - elf_init_start),
+                                        0);
+    if (init_pid < 0) {
+        kprintf("[init] FAIL: process_spawn_elf returned %d\n\r", (int)init_pid);
+        return;
+    }
 
-    kprintf("[init] spawned pids %u, %u, %u\n\r",
-            (uint64_t)p1, (uint64_t)p2, (uint64_t)p3);
+    kprintf("[init] spawned init pid %u\n\r", (uint64_t)init_pid);
 
-    /* Reap all three.  process_try_reap returns 0 while a child is still
+    /* Reap init. process_try_reap returns 0 while the child is still
      * running, so yield and retry rather than spinning on the CPU. */
-    int reaped = 0;
-    while (reaped < 3) {
+    while (1) {
         int32_t status = 0;
-        pid_t_v r = process_try_reap(0, -1, &status);
+        pid_t_v r = process_try_reap(0, init_pid, &status);
         if (r > 0) {
             kprintf("[init] reaped pid %u, status %u\n\r",
                     (uint64_t)r, (uint64_t)(uint32_t)status);
-            reaped++;
+            break;
         } else if (r < 0) {
-            break;                       /* no children left */
+            kprintf("[init] reap error: %d\n\r", (int)r);
+            break;
         } else {
             sched_yield();
         }
     }
 
-    kprintf("[init] all children reaped. Phase 4 tests complete.\n\r");
+    kprintf("[init] Phase 5B init process exited. Kernel stable.\n\r");
 }
 
 /* ════════════════════════════════════════════════════════════════════════
