@@ -25,6 +25,7 @@
 #include <arch/x86_64/idt.h>
 
 /* ── syscall numbers (Linux x86_64 compatible) ───────────────────────── */
+#define SYS_read         0
 #define SYS_write        1
 #define SYS_sched_yield  24
 #define SYS_getpid       39

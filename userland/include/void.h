@@ -13,6 +13,7 @@
 #include <stddef.h>
 
 /* ── syscall numbers (Linux x86_64 compatible) ─────────────────────── */
+#define SYS_read        0
 #define SYS_write       1
 #define SYS_sched_yield 24
 #define SYS_getpid      39
@@ -51,6 +52,10 @@ static inline long syscall3(long num, long arg0, long arg1, long arg2) {
 }
 
 /* ── POSIX-like wrappers ────────────────────────────────────────────── */
+
+static inline long sys_read(int fd, void *buf, size_t count) {
+    return syscall3(SYS_read, fd, (long)buf, count);
+}
 
 static inline long sys_write(int fd, const void *buf, size_t count) {
     return syscall3(SYS_write, fd, (long)buf, count);

@@ -16,6 +16,7 @@
 #define UART_DLH   1   /* Divisor Latch High (LCR.DLAB=1)  */
 
 #define UART_LSR_TX_EMPTY  0x20   /* bit 5: THR empty */
+#define UART_LSR_RX_READY  0x01   /* bit 0: data ready in RBR */
 
 /* ── serial_init — configure COM1 at 115200 8N1 ──────────────────────── */
 void serial_init(void) {
@@ -45,3 +46,14 @@ void serial_puts(const char *s) {
         serial_putchar(*s++);
     }
 }
+
+/* ── serial_getchar — non-blocking read of a single byte ────────────────
+ * Returns the character if available, or -1 if no data ready. */
+int serial_getchar(void) {
+    uint8_t lsr = inb(COM1 + UART_LSR);
+    if (!(lsr & UART_LSR_RX_READY)) {
+        return -1;  /* no data available */
+    }
+    return (int)(uint8_t)inb(COM1 + UART_RBR);
+}
+

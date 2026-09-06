@@ -14,6 +14,7 @@
 void     serial_init(void);
 void     serial_putchar(char c);
 void     serial_puts(const char *s);
+int      serial_getchar(void);  /* non-blocking read; -1 if no data */
 
 /* kprintf — minimal kernel printf (no floating point, no %n)
  * Supported: %d %u %x %p %s %c %%                          */

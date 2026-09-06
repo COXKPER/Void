@@ -108,6 +108,70 @@ static bool copy_from_user(process_t *p, void *dst, uint64_t usrc, uint64_t len)
     return true;
 }
 
+/* ── copy_to_user ────────────────────────────────────────────────────────
+ * Write to user space via HHDM, one page at a time. Validates every page
+ * in the range before writing. */
+static bool copy_to_user(process_t *p, uint64_t udst, const void *src, uint64_t len) {
+    if (!user_range_ok(p, udst, len, true)) return false;
+
+    const uint8_t *in = (const uint8_t *)src;
+    uint64_t done = 0;
+    while (done < len) {
+        uint64_t va     = udst + done;
+        uint64_t page   = va & ~(PAGE_SIZE - 1);
+        uint64_t offset = va - page;
+        uint64_t chunk  = PAGE_SIZE - offset;
+        if (chunk > len - done) chunk = len - done;
+
+        uint64_t phys = vmm_virt_to_phys((uint64_t *)p->cr3, va);
+        if (!phys) return false;
+
+        uint8_t *dst = (uint8_t *)(phys + g_boot.hhdm_offset);
+        for (uint64_t i = 0; i < chunk; i++) dst[i] = in[done + i];
+        done += chunk;
+    }
+    return true;
+}
+
+/* ── sys_read ────────────────────────────────────────────────────────────
+ * Currently only FD_SERIAL (console) is supported. Reads from serial input
+ * (RBR) on port COM1. Non-blocking: returns available chars or 0 if none ready.
+ * Returns byte count, 0 (no data ready), or -error. */
+static int64_t sys_read(process_t *p, int32_t fd, uint64_t ubuf, uint64_t count) {
+    if (fd < 0 || fd >= MAX_FDS)        return -VE_BADF;
+    if (p->fds[fd].type != FD_SERIAL)   return -VE_BADF;
+    if (count == 0)                     return 0;
+
+    /* Bounded staging buffer for reads */
+    char buf[256];
+    uint64_t nread = 0;
+    uint64_t to_read = count > sizeof(buf) ? sizeof(buf) : count;
+
+    /* Non-blocking read: gather available chars up to limit or newline */
+    while (nread < to_read) {
+        int ch = serial_getchar();
+        if (ch == -1) {
+            /* No more data available. Return what we have. */
+            break;
+        }
+
+        buf[nread++] = (char)ch;
+
+        /* Stop on newline (shell convention: read until Enter) */
+        if (ch == '\n') {
+            break;
+        }
+    }
+
+    /* Copy staged buffer to user space */
+    if (nread > 0) {
+        if (!copy_to_user(p, ubuf, buf, nread))
+            return nread ? (int64_t)nread : -VE_FAULT;
+    }
+
+    return (int64_t)nread;
+}
+
 /* ── sys_write ───────────────────────────────────────────────────────────
  * Only console-backed descriptors exist right now; a real VFS replaces the
  * FD_SERIAL branch later without changing the ABI. */
@@ -139,6 +203,11 @@ isr_frame_t *syscall_dispatch(isr_frame_t *frame) {
     uint64_t nr  = frame->rax;
 
     switch (nr) {
+    case SYS_read:
+        frame->rax = (uint64_t)sys_read(p, (int32_t)frame->rdi,
+                                       frame->rsi, frame->rdx);
+        return frame;
+
     case SYS_write:
         frame->rax = (uint64_t)sys_write(p, (int32_t)frame->rdi,
                                         frame->rsi, frame->rdx);
