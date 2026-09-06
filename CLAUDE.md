@@ -76,9 +76,17 @@ kernel/
 └── linker.ld          # Higher-half linker script (KERNEL_VBASE=0xFFFFFFFF80000000)
 
 userland/
-├── init/              # Future: userland.img (Process 1 / Init)
-├── libvoid/           # Future: POSIX-like userspace library
-└── services/          # Future: Ring 3 drivers/services (.ss modules)
+├── include/
+│   └── void.h              # libvoid syscall wrappers (write, getpid, sched_yield, exit)
+├── crt0.S                  # Minimal entry point: stack alignment + main() + exit
+├── init/
+│   ├── main.c              # First init process: calls getpid/write/sched_yield/exit
+│   └── (no services yet)
+├── init.ld                 # Linker script for init.elf (0x400000 base, page-aligned PT_LOAD)
+├── user.ld                 # Linker script for Phase 4 test ELF (elf_test.elf)
+├── user_packed.ld          # Linker script for .text+.rodata in same page (tests permission union)
+├── elf_test.c              # Phase 5A test executable (Phase 4 compatibility)
+└── (no VFS, fork/execve, dynamic linking yet)
 
 scripts/
 └── limine.cfg         # Limine boot config (kernel path, module definitions)
@@ -127,13 +135,27 @@ limine/                # Vendored Limine v9.6.7 (git submodule, DO NOT MODIFY)
 - ✅ Ring 3 faults kill the process (SIGSEGV/SIGBUS status), never panic
 - ✅ File descriptor abstraction — per-process fd table, fd 0/1/2 → console
 
-**Phase 5 — Next:**
-- ELF loader (replace raw blob spawn with ELF64 parsing)
-- fork() + execve() — the POSIX process model
+**Phase 5A — ELF64 Loader (COMPLETE):**
+- ✅ ELF64 validation (magic, machine, type, phdr bounds, file/virtual ranges, alignment congruence, W^X rejection, entry-point placement)
+- ✅ PT_LOAD loading (page-by-page via HHDM, BSS zeroing, permission union on shared pages)
+- ✅ Two-phase validation+loading (malformed binaries rejected before any mapping)
+- ✅ process_spawn_elf() integration with existing scheduler/process lifecycle
+- ✅ elf_selftest: 35+ negative tests (mutation-based validation of every check)
+
+**Phase 5B — First Real Userland (COMPLETE):**
+- ✅ libvoid: syscall wrappers (write/getpid/sched_yield/exit) matching Linux x86_64 ABI
+- ✅ crt0.S: minimal entry point with stack alignment for main() entry
+- ✅ init/main.c: first Ring 3 ELF process (test getpid/write/sched_yield/exit)
+- ✅ init.elf embedded in kernel, spawned at boot via process_spawn_elf
+- ✅ Verified Ring 3 execution, clean shutdown, parent reap
+- ✅ All Phase 4 regression tests still passing
+
+**Phase 6 — Next (NOT STARTED):**
+- fork() + execve() — POSIX process model
 - VFS layer + real file descriptors (open/read/close)
 - IPC (VFS node registry, circular ring buffers)
 - brk/mmap for user heap
-- libvoid: minimal POSIX-shaped libc
+- Dynamic linking, libc services
 
 ## Key Design Decisions
 
