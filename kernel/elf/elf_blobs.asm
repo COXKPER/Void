@@ -47,3 +47,24 @@ global elf_forkexec_test_end
 elf_forkexec_test_start:
     incbin "build/userland/forkexec_test.elf"
 elf_forkexec_test_end:
+
+align 4096
+global elf_calc_start
+global elf_calc_end
+elf_calc_start:
+    incbin "build/userland/calc.elf"
+elf_calc_end:
+
+align 4096
+global elf_srv_test_start
+global elf_srv_test_end
+elf_srv_test_start:
+    incbin "build/userland/srv_test.elf"
+elf_srv_test_end:
+
+align 4096
+global elf_lifecycle_test_start
+global elf_lifecycle_test_end
+elf_lifecycle_test_start:
+    incbin "build/userland/lifecycle_test.elf"
+elf_lifecycle_test_end:

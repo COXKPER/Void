@@ -30,6 +30,9 @@ extern const uint8_t elf_packed_start[], elf_packed_end[];
 extern const uint8_t elf_init_start[], elf_init_end[];
 extern const uint8_t elf_ipc_test_start[], elf_ipc_test_end[];
 extern const uint8_t elf_forkexec_test_start[], elf_forkexec_test_end[];
+extern const uint8_t elf_calc_start[], elf_calc_end[];
+extern const uint8_t elf_srv_test_start[], elf_srv_test_end[];
+extern const uint8_t elf_lifecycle_test_start[], elf_lifecycle_test_end[];
 
 /* ELF self-check (kernel/elf/elf_selftest.c) */
 uint32_t elf_selftest(const void *image, uint64_t size);
@@ -181,6 +184,41 @@ void NO_RETURN kernel_main(void) {
         kprintf("[init] fork/exec test pid %u running.\n\r", (uint64_t)forkexec_pid);
     } else {
         kprintf("[init] ERROR: fork/exec test spawn failed (%d)\n\r", (int)forkexec_pid);
+    }
+
+    /* Phase 9 service test: spawn the calc service first, then the client
+     * that looks it up.  calc runs forever (never exits), so the client
+     * discovers it via the kernel service registry and serves requests. */
+    kprintf("[init] Spawning calc service...\n\r");
+    pid_t_v calc_pid = process_spawn_elf(elf_calc_start,
+                                         (uint64_t)(elf_calc_end - elf_calc_start),
+                                         0);
+    if (calc_pid > 0) {
+        kprintf("[init] calc service pid %u running.\n\r", (uint64_t)calc_pid);
+    } else {
+        kprintf("[init] ERROR: calc spawn failed (%d)\n\r", (int)calc_pid);
+    }
+
+    kprintf("[init] Spawning service test client...\n\r");
+    pid_t_v srvtest_pid = process_spawn_elf(elf_srv_test_start,
+                                            (uint64_t)(elf_srv_test_end - elf_srv_test_start),
+                                            0);
+    if (srvtest_pid > 0) {
+        kprintf("[init] service test pid %u running.\n\r", (uint64_t)srvtest_pid);
+    } else {
+        kprintf("[init] ERROR: service test spawn failed (%d)\n\r", (int)srvtest_pid);
+    }
+
+    /* Phase 9 lifecycle test: service registers → client round-trips → the
+     * service exits (forked child dies) → the registry forgets the name. */
+    kprintf("[init] Spawning lifecycle test...\n\r");
+    pid_t_v lifecycle_pid = process_spawn_elf(elf_lifecycle_test_start,
+                                              (uint64_t)(elf_lifecycle_test_end - elf_lifecycle_test_start),
+                                              0);
+    if (lifecycle_pid > 0) {
+        kprintf("[init] lifecycle test pid %u running.\n\r", (uint64_t)lifecycle_pid);
+    } else {
+        kprintf("[init] ERROR: lifecycle test spawn failed (%d)\n\r", (int)lifecycle_pid);
     }
 
     sched_start();

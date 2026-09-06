@@ -20,6 +20,7 @@
 #include <dev/serial.h>
 #include <ipc/ipc.h>
 #include <ipc/ipc_internal.h>   /* handle table layout, for fork's deep copy */
+#include <svc/svc_internal.h>   /* service registry owner cleanup on exit   */
 
 static process_t proc_table[MAX_PROCESSES];
 static pid_t_v   next_pid;
@@ -200,6 +201,10 @@ void process_destroy(process_t *p) {
     ipc_endpoint_unregister_by_owner(p->pid);
     ipc_handle_table_destroy(p->ipc_handles);
     p->ipc_handles = NULL;
+
+    /* Drop any service names this process registered — a dead service must
+     * never stay discoverable. */
+    svc_cleanup_owner(p->pid);
 
     p->state = PROC_UNUSED;
     p->pid   = -1;
@@ -414,7 +419,8 @@ isr_frame_t *process_fork_current(isr_frame_t *frame) {
         for (int i = 0; i < IPC_MAX_HANDLES; i++) {
             c->ipc_handles->handles[i] = p->ipc_handles->handles[i];
         }
-        c->ipc_handles->next_local_endpoint_id = p->ipc_handles->next_local_endpoint_id;
+        /* endpoint ids are handle numbers now, so the child's re-created
+         * endpoints (ids) line up with its own handle array.  No counter. */
     } else {
         c->ipc_handles = NULL;
     }
@@ -601,8 +607,10 @@ isr_frame_t *process_exit_current(isr_frame_t *frame, int32_t status) {
     p->umap_count = 0;
 
     /* Endpoints die with the process, not at reap time: a zombie must not
-     * keep accepting messages nobody will ever read. */
+     * keep accepting messages nobody will ever read.  So do the service
+     * names pointing at them. */
     ipc_endpoint_unregister_by_owner(p->pid);
+    svc_cleanup_owner(p->pid);
 
     /* Wake a parent blocked in wait(). */
     process_t *parent = process_get(p->ppid);

@@ -149,5 +149,8 @@ extern const uint8_t elf_packed_start[], elf_packed_end[];
 extern const uint8_t elf_init_start[], elf_init_end[];
 extern const uint8_t elf_ipc_test_start[], elf_ipc_test_end[];
 extern const uint8_t elf_forkexec_test_start[], elf_forkexec_test_end[];
+extern const uint8_t elf_calc_start[], elf_calc_end[];
+extern const uint8_t elf_srv_test_start[], elf_srv_test_end[];
+extern const uint8_t elf_lifecycle_test_start[], elf_lifecycle_test_end[];
 
 #endif /* VOID_ELF_H */

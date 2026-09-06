@@ -85,6 +85,9 @@ elf_status_t elf_find_embedded(const char *name, const elf_blob_t *out) {
         { "elf_test",   elf_test_start,          elf_test_end          },
         { "ipc_test",   elf_ipc_test_start,      elf_ipc_test_end      },
         { "fork_test",  elf_forkexec_test_start, elf_forkexec_test_end },
+        { "calc",       elf_calc_start,          elf_calc_end          },
+        { "srv_test",   elf_srv_test_start,      elf_srv_test_end      },
+        { "lifecycle",  elf_lifecycle_test_start, elf_lifecycle_test_end },
     };
 
     if (!name || !out) return ELF_ERR_INVAL;
