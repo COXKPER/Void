@@ -48,13 +48,13 @@ static void test_address_space_isolation(void) {
     process_t *a = process_alloc(0);
     process_t *b = process_alloc(0);
     if (!a || !b) {
-        kprintf("[TEST] FAIL: could not allocate two processes\n\r");
+        kprintf("[REGRESS] FAIL: could not allocate two processes\n\r");
         return;
     }
 
     if (process_alloc_user_page(a, probe, VMM_WRITE) != VOID_OK ||
         process_alloc_user_page(b, probe, VMM_WRITE) != VOID_OK) {
-        kprintf("[TEST] FAIL: could not map user probe page\n\r");
+        kprintf("[REGRESS] FAIL: could not map user probe page\n\r");
         return;
     }
 
@@ -69,14 +69,13 @@ static void test_address_space_isolation(void) {
     uint64_t vb = *(volatile uint64_t *)probe;
     __asm__ volatile ("mov %0, %%cr3" : : "r"(saved_cr3) : "memory");
 
-    kprintf("[TEST] %s: same VA holds 0x%x in pid %u, 0x%x in pid %u\n\r",
+    kprintf("[REGRESS] %s: address-space isolation (same VA has distinct values)\n\r",
             (va == 0xAAAAAAAAAAAAAAAAULL && vb == 0xBBBBBBBBBBBBBBBBULL)
-                ? "PASS" : "FAIL",
-            va, (uint64_t)a->pid, vb, (uint64_t)b->pid);
+                ? "PASS" : "FAIL");
 
     uint64_t kprobe = vmm_virt_to_phys((uint64_t *)a->cr3, (uint64_t)&saved_cr3);
-    kprintf("[TEST] %s: kernel mappings reachable from pid %u\n\r",
-            kprobe ? "PASS" : "FAIL", (uint64_t)a->pid);
+    kprintf("[REGRESS] %s: kernel mappings shared (reachable from user process)\n\r",
+            kprobe ? "PASS" : "FAIL");
 
     process_destroy(a);
     process_destroy(b);
@@ -88,36 +87,34 @@ static void test_address_space_isolation(void) {
 static void init_thread(void *arg) {
     (void)arg;
 
-    kprintf("\n\r[init] spawning ELF init process...\n\r");
+    kprintf("[init] Spawning first userland process...\n\r");
 
     pid_t_v init_pid = process_spawn_elf(elf_init_start,
                                         (uint64_t)(elf_init_end - elf_init_start),
                                         0);
     if (init_pid < 0) {
-        kprintf("[init] FAIL: process_spawn_elf returned %d\n\r", (int)init_pid);
+        kprintf("[init] ERROR: process_spawn_elf failed (%d)\n\r", (int)init_pid);
         return;
     }
 
-    kprintf("[init] spawned init pid %u\n\r", (uint64_t)init_pid);
+    kprintf("[init] Userland process pid %u running.\n\r", (uint64_t)init_pid);
 
-    /* Reap init. process_try_reap returns 0 while the child is still
+    /* Reap init process. process_try_reap returns 0 while the child is still
      * running, so yield and retry rather than spinning on the CPU. */
     while (1) {
         int32_t status = 0;
         pid_t_v r = process_try_reap(0, init_pid, &status);
         if (r > 0) {
-            kprintf("[init] reaped pid %u, status %u\n\r",
-                    (uint64_t)r, (uint64_t)(uint32_t)status);
+            kprintf("[init] Process exited with status %u.\n\r",
+                    (uint64_t)(uint32_t)status);
             break;
         } else if (r < 0) {
-            kprintf("[init] reap error: %d\n\r", (int)r);
+            kprintf("[init] Reap error: %d\n\r", (int)r);
             break;
         } else {
             sched_yield();
         }
     }
-
-    kprintf("[init] Phase 5B init process exited. Kernel stable.\n\r");
 }
 
 /* ════════════════════════════════════════════════════════════════════════
@@ -126,21 +123,19 @@ static void init_thread(void *arg) {
 void NO_RETURN kernel_main(void) {
     serial_init();
     console_init();
-    kprintf("\n\r[VoidOS] Bootstrapping kernel...\n\r");
+    kprintf("[VoidOS] Bootstrapping...\n\r");
 
     boot_init();
 
     gdt_init();
-    kprintf("[VoidOS] GDT loaded.\n\r");
-
     idt_init();
-    kprintf("[VoidOS] IDT loaded.\n\r");
 
-    kprintf("[VoidOS] HHDM offset:    0x%016x\n\r", g_boot.hhdm_offset);
+    /* Debug: early boot parameters */
+    kprintf("[DEBUG] HHDM offset:    0x%016x\n\r", g_boot.hhdm_offset);
     if (g_boot.fb)
-        kprintf("[VoidOS] Framebuffer:    %ux%u @ %ubpp\n\r",
+        kprintf("[DEBUG] Framebuffer:    %ux%u @ %ubpp\n\r",
                 g_boot.fb->width, g_boot.fb->height, (uint64_t)g_boot.fb->bpp);
-    kprintf("[VoidOS] Usable memory:  %u KiB\n\r", g_boot.total_usable_memory / 1024);
+    kprintf("[DEBUG] Usable memory:  %u KiB\n\r", g_boot.total_usable_memory / 1024);
 
     pmm_init();
     vmm_init();
@@ -153,13 +148,14 @@ void NO_RETURN kernel_main(void) {
     process_init();
     syscall_init();
 
+    /* Regression test: address-space isolation */
     test_address_space_isolation();
 
     sched_create_kthread(init_thread, NULL);
 
     sched_start();
     interrupts_enable();
-    kprintf("[VoidOS] Kernel ready. Scheduler active.\n\r");
+    kprintf("[VoidOS] Ready.\n\r");
 
     for (;;)
         __asm__ volatile ("hlt");
