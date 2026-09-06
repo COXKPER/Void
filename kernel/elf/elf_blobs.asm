@@ -40,3 +40,10 @@ global elf_ipc_test_end
 elf_ipc_test_start:
     incbin "build/userland/ipc_test.elf"
 elf_ipc_test_end:
+
+align 4096
+global elf_forkexec_test_start
+global elf_forkexec_test_end
+elf_forkexec_test_start:
+    incbin "build/userland/forkexec_test.elf"
+elf_forkexec_test_end:

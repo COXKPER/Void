@@ -128,6 +128,23 @@ pid_t_v process_spawn_user(const void *code, uint64_t code_len, pid_t_v parent);
  * rather than allocating a new one. */
 pid_t_v process_spawn_elf(const void *image, uint64_t size, pid_t_v parent);
 
+/* ── fork/exec (Phase 8) ───────────────────────────────────────────────
+ * Both take and return an isr_frame_t: a fork produces a *second* thread,
+ * and an exec rewrites the *current* one, so both end by handing the
+ * restored frame back to the syscall trailer. */
+
+/* Duplicate the calling process: fresh address space with an eager private
+ * copy of every user page, fresh kernel stack carrying a copy of the current
+ * frame (child's RAX forced to 0), copied fd table.  Returns the child PID
+ * in the parent's frame RAX, 0 in the child's, or -VE_* on failure. */
+isr_frame_t *process_fork_current(isr_frame_t *frame);
+
+/* Replace the calling process's address space with the ELF image named by
+ * the user string `upath` (a kernel-resident embedded blob today).  PID and
+ * fd table survive.  Returns a frame only to hand back to the trailer; the
+ * caller must pass an ELF image reference where resolve 1:1. */
+isr_frame_t *process_execve_current(isr_frame_t *frame, uint64_t upath);
+
 /* Terminate the calling process with `status`; never returns to it. */
 isr_frame_t *process_exit_current(isr_frame_t *frame, int32_t status);
 

@@ -29,6 +29,7 @@ extern const uint8_t elf_test_start[], elf_test_end[];
 extern const uint8_t elf_packed_start[], elf_packed_end[];
 extern const uint8_t elf_init_start[], elf_init_end[];
 extern const uint8_t elf_ipc_test_start[], elf_ipc_test_end[];
+extern const uint8_t elf_forkexec_test_start[], elf_forkexec_test_end[];
 
 /* ELF self-check (kernel/elf/elf_selftest.c) */
 uint32_t elf_selftest(const void *image, uint64_t size);
@@ -163,6 +164,17 @@ void NO_RETURN kernel_main(void) {
         kprintf("[init] IPC test pid %u running.\n\r", (uint64_t)ipc_test_pid);
     } else {
         kprintf("[init] ERROR: IPC test spawn failed (%d)\n\r", (int)ipc_test_pid);
+    }
+
+    /* Phase 8 fork/lifecycle test: spawn and wait for completion */
+    kprintf("[init] Spawning fork/exec test...\n\r");
+    pid_t_v forkexec_pid = process_spawn_elf(elf_forkexec_test_start,
+                                             (uint64_t)(elf_forkexec_test_end - elf_forkexec_test_start),
+                                             0);
+    if (forkexec_pid > 0) {
+        kprintf("[init] fork/exec test pid %u running.\n\r", (uint64_t)forkexec_pid);
+    } else {
+        kprintf("[init] ERROR: fork/exec test spawn failed (%d)\n\r", (int)forkexec_pid);
     }
 
     sched_start();

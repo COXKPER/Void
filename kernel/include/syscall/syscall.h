@@ -39,6 +39,7 @@ typedef struct process process_t;
 #define SYS_ipc_send             63
 #define SYS_ipc_recv             64
 #define SYS_ipc_close            65
+#define SYS_fork                  67   /* no Linux index; Void slot      */
 
 /* ── errno values (negated on return, POSIX names) ───────────────────── */
 #define VE_PERM     1    /* EPERM  */

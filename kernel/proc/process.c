@@ -19,6 +19,7 @@
 #include <void/boot.h>
 #include <dev/serial.h>
 #include <ipc/ipc.h>
+#include <ipc/ipc_internal.h>   /* handle table layout, for fork's deep copy */
 
 static process_t proc_table[MAX_PROCESSES];
 static pid_t_v   next_pid;
@@ -328,6 +329,111 @@ pid_t_v process_spawn_elf(const void *image, uint64_t size, pid_t_v parent) {
     p->thread = t;
     p->state  = PROC_READY;
     return p->pid;
+}
+
+/* ── process_fork_current ───────────────────────────────────────────────
+ * Eager copy-on-fork: the child gets a private copy of every user page the
+ * parent has mapped.  Void has no COW machinery (no user-page-fault handler,
+ * no frame refcounts), so a shared mapping would be owned by two processes
+ * that both free it on exit — double-free.  Correct eager copy first;
+ * ponytail: real COW when uPF + frame refcounts land.
+ *
+ * The frame is duplicated byte-for-byte (SYSV regs, user RSP, RFLAGS are the
+ * continuation point), then the child's RAX is forced to 0 so the child sees
+ * fork()==0 while the parent sees the child's PID. */
+isr_frame_t *process_fork_current(isr_frame_t *frame) {
+    process_t *p = process_current();
+    if (!p || p->pid == 0) {
+        if (frame) frame->rax = (uint64_t)(int64_t)-VE_PERM;
+        return frame;
+    }
+    if (p->state == PROC_ZOMBIE || p->state == PROC_BLOCKED) {
+        if (frame) frame->rax = (uint64_t)(int64_t)-VE_PERM;
+        return frame;
+    }
+
+    /* Fresh PID + address space; parent for the child is *us*. */
+    process_t *c = process_alloc(p->pid);
+    if (!c) {
+        if (frame) frame->rax = (uint64_t)(int64_t)-VE_NOMEM;
+        return frame;
+    }
+
+    /* ── eager page copy ─────────────────────────────────────────────── */
+    for (uint32_t i = 0; i < p->umap_count; i++) {
+        uint64_t virt = p->umap[i].virt;
+        uint64_t phys = p->umap[i].phys;
+
+        /* The flags a fork must replicate are read from the *parent's* PTE,
+         * not from any stored intent: PRESENT/USER are implied, but WRITE and
+         * NX must survive the copy so the child honours read-only and
+         * no-execute the same way. */
+        uint64_t pte = vmm_get_pte((uint64_t *)p->cr3, virt);
+        uint64_t flags = 0;
+        if (pte & VMM_WRITE) flags |= VMM_WRITE;
+        if (pte & VMM_NX)    flags |= VMM_NX;
+
+        /* New frame, zeroed by the allocator; copy the data in through the
+         * HHDM so we never touch the user VA directly. */
+        uint64_t cphys = pmm_alloc_frame();
+        if (!cphys) { process_destroy(c); if (frame) frame->rax = (uint64_t)(int64_t)-VE_NOMEM; return frame; }
+
+        uint8_t *src = (uint8_t *)(phys  + g_boot.hhdm_offset);
+        uint8_t *dst = (uint8_t *)(cphys + g_boot.hhdm_offset);
+        for (uint64_t b = 0; b < PAGE_SIZE; b++) dst[b] = src[b];
+
+        if (process_map_user(c, virt, cphys, flags) != VOID_OK) {
+            pmm_free_frame(cphys);
+            process_destroy(c);
+            if (frame) frame->rax = (uint64_t)(int64_t)-VE_NOMEM;
+            return frame;
+        }
+    }
+
+    /* ── IPC handle table: child inherits a *copy* of the entries.  Each
+     * entry points at an endpoint owned by a specific pid (probably the
+     * parent), so the child sharing the target is fine; when either process
+     * exits, ipc_endpoint_unregister_by_owner only frees that pid's own
+     * endpoints — no refcounting, no cross-process ownership ambiguity. */
+    if (p->ipc_handles) {
+        c->ipc_handles = ipc_handle_table_create();
+        if (!c->ipc_handles) { process_destroy(c); if (frame) frame->rax = (uint64_t)(int64_t)-VE_NOMEM; return frame; }
+        for (int i = 0; i < IPC_MAX_HANDLES; i++) {
+            c->ipc_handles->handles[i] = p->ipc_handles->handles[i];
+        }
+        c->ipc_handles->next_local_endpoint_id = p->ipc_handles->next_local_endpoint_id;
+    } else {
+        c->ipc_handles = NULL;
+    }
+
+    /* ── dup the fd table ────────────────────────────────────────────── */
+    for (int f = 0; f < MAX_FDS; f++) {
+        c->fds[f] = p->fds[f];
+    }
+
+    /* ── thread: fresh kernel stack + copy of the frame ──────────────── */
+    uint64_t kbase;
+    uint64_t ktop = sched_alloc_kstack(&kbase);
+    if (!ktop) { process_destroy(c); if (frame) frame->rax = (uint64_t)(int64_t)-VE_NOMEM; return frame; }
+
+    isr_frame_t *cf = (isr_frame_t *)(ktop - sizeof(isr_frame_t));
+    uint64_t     asz = sizeof(isr_frame_t) / 8;
+    for (uint64_t i = 0; i < asz; i++) ((uint64_t *)cf)[i] = ((uint64_t *)frame)[i];
+
+    cf->rax = 0;   /* child observes fork() == 0 */
+
+    thread_t *t = sched_adopt_thread((uint64_t)cf, c->cr3, c,
+                                     (uint64_t *)kbase, KTHREAD_STACK_SIZE);
+    if (!t) { process_destroy(c); if (frame) frame->rax = (uint64_t)(int64_t)-VE_NOMEM; return frame; }
+
+    c->thread = t;
+    c->state  = PROC_READY;
+
+    kprintf("[PROC] fork: pid %u -> pid %u\n\r",
+            (uint64_t)p->pid, (uint64_t)c->pid);
+
+    if (frame) frame->rax = (uint64_t)(int64_t)c->pid;
+    return frame;
 }
 
 /* ── process_exit_current ────────────────────────────────────────────── */

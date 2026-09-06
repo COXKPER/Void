@@ -18,6 +18,8 @@
 #define SYS_sched_yield 24
 #define SYS_getpid      39
 #define SYS_exit        60
+#define SYS_wait4       61
+#define SYS_fork        67      /* Void slot (no Linux index)          */
 
 /* ── syscall wrappers ───────────────────────────────────────────────── */
 
@@ -67,6 +69,14 @@ static inline long sys_sched_yield(void) {
 
 static inline long sys_getpid(void) {
     return syscall0(SYS_getpid);
+}
+
+static inline long sys_fork(void) {
+    return syscall0(SYS_fork);
+}
+
+static inline long sys_wait4(long pid, long *ustatus, long options) {
+    return syscall3(SYS_wait4, pid, (long)ustatus, options);
 }
 
 static inline void sys_exit(int status) {
