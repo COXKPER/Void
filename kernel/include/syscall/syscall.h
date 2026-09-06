@@ -24,13 +24,21 @@
 #include <void/types.h>
 #include <arch/x86_64/idt.h>
 
+/* Forward declarations */
+struct process;
+typedef struct process process_t;
+
 /* ── syscall numbers (Linux x86_64 compatible) ───────────────────────── */
-#define SYS_read         0
-#define SYS_write        1
-#define SYS_sched_yield  24
-#define SYS_getpid       39
-#define SYS_exit         60
-#define SYS_wait4        61
+#define SYS_read                 0
+#define SYS_write                1
+#define SYS_sched_yield          24
+#define SYS_getpid               39
+#define SYS_exit                 60
+#define SYS_wait4                61
+#define SYS_ipc_endpoint_create  62
+#define SYS_ipc_send             63
+#define SYS_ipc_recv             64
+#define SYS_ipc_close            65
 
 /* ── errno values (negated on return, POSIX names) ───────────────────── */
 #define VE_PERM     1    /* EPERM  */
@@ -61,5 +69,18 @@ void syscall_set_kernel_stack(uint64_t rsp);
 /* C dispatcher, called from syscall_entry. Returns the frame to restore
  * (differs from the input frame when the call caused a context switch). */
 isr_frame_t *syscall_dispatch(isr_frame_t *frame);
+
+/* ── User pointer validation and copy (shared by syscalls) ────────── */
+bool user_range_ok(struct process *p, uint64_t base, uint64_t len, bool need_write);
+bool copy_from_user(struct process *p, void *dst, uint64_t usrc, uint64_t len);
+bool copy_to_user(struct process *p, uint64_t udst, const void *src, uint64_t len);
+
+/* ── IPC syscall handlers (Phase 7) ───────────────────────────────── */
+int32_t sys_ipc_endpoint_create(void);
+int32_t sys_ipc_send(int32_t dest_handle, uint32_t tag,
+                     const void *data, uint32_t data_len);
+int32_t sys_ipc_recv(int32_t handle, uint32_t *tag_out,
+                     void *data_out, uint32_t max_len);
+int32_t sys_ipc_close(int32_t handle);
 
 #endif /* VOID_SYSCALL_H */

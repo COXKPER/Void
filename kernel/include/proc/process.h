@@ -71,6 +71,9 @@ typedef struct process {
      * VMA/region list when mmap and demand paging land. */
     struct { uint64_t virt, phys; } umap[64];
     uint32_t      umap_count;
+
+    /* IPC handle table (Phase 7 merger) */
+    struct ipc_handle_table *ipc_handles;
 } process_t;
 
 /* ── API ──────────────────────────────────────────────────────────────── */

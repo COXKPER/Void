@@ -14,6 +14,7 @@
 #include <mm/pmm.h>
 #include <dev/serial.h>
 #include <void/boot.h>
+#include <ipc/ipc.h>
 
 /* ── MSRs ────────────────────────────────────────────────────────────── */
 #define IA32_EFER   0xC0000080
@@ -228,6 +229,28 @@ isr_frame_t *syscall_dispatch(isr_frame_t *frame) {
 
     case SYS_wait4:
         return process_wait_current(frame, (pid_t_v)(int32_t)frame->rdi, frame->rsi);
+
+    case SYS_ipc_endpoint_create:
+        frame->rax = (uint64_t)(int64_t)sys_ipc_endpoint_create();
+        return frame;
+
+    case SYS_ipc_send:
+        frame->rax = (uint64_t)(int64_t)sys_ipc_send(
+            (int32_t)frame->rdi, (uint32_t)frame->rsi,
+            (const void *)frame->rdx, (uint32_t)frame->r10
+        );
+        return frame;
+
+    case SYS_ipc_recv:
+        frame->rax = (uint64_t)(int64_t)sys_ipc_recv(
+            (int32_t)frame->rdi, (uint32_t *)frame->rsi,
+            (void *)frame->rdx, (uint32_t)frame->r10
+        );
+        return frame;
+
+    case SYS_ipc_close:
+        frame->rax = (uint64_t)(int64_t)sys_ipc_close((int32_t)frame->rdi);
+        return frame;
 
     default:
         kprintf("[SYSCALL] pid %u: unknown syscall %u\n\r",
