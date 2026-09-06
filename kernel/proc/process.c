@@ -147,10 +147,15 @@ void_status_t process_alloc_user_page(process_t *p, uint64_t virt, uint64_t flag
     return s;
 }
 
-/* ── process_destroy ─────────────────────────────────────────────────── */
-void process_destroy(process_t *p) {
-    if (!p || p->state == PROC_UNUSED) return;
-
+/* ── process_destroy_user_space ─────────────────────────────────────────
+ * Free the *user* half of a process's address space: every frame it handed
+ * out (via umap[]) plus the lower-half page tables (PDPT/PD/PT).  The upper
+ * half is shared with the kernel by reference and is never freed here.
+ * Leaves `p` with no cr3 (0) and a cleared umap so teardown is idempotent.
+ *
+ * Shared by process_destroy / process_exit_current (full teardown) and by
+ * execve's swap (which then installs a fresh cr3). */
+static void process_destroy_user_space(process_t *p) {
     /* Free user frames we handed out. */
     for (uint32_t i = 0; i < p->umap_count; i++) {
         vmm_unmap_page((uint64_t *)p->cr3, p->umap[i].virt);
@@ -181,13 +186,21 @@ void process_destroy(process_t *p) {
         pml4[i] = 0;
     }
 
+    pmm_free_frame(p->cr3);
+    p->cr3 = 0;
+}
+
+/* ── process_destroy ─────────────────────────────────────────────────── */
+void process_destroy(process_t *p) {
+    if (!p || p->state == PROC_UNUSED) return;
+
+    process_destroy_user_space(p);
+
     /* Drop IPC state so no other process can reach a stale endpoint. */
     ipc_endpoint_unregister_by_owner(p->pid);
     ipc_handle_table_destroy(p->ipc_handles);
     p->ipc_handles = NULL;
 
-    pmm_free_frame(p->cr3);
-    p->cr3   = 0;
     p->state = PROC_UNUSED;
     p->pid   = -1;
 }
@@ -433,6 +446,123 @@ isr_frame_t *process_fork_current(isr_frame_t *frame) {
             (uint64_t)p->pid, (uint64_t)c->pid);
 
     if (frame) frame->rax = (uint64_t)(int64_t)c->pid;
+    return frame;
+}
+
+/* ── process_execve_current ─────────────────────────────────────────────
+ * User classifies the path; the kernel sees only a name and replaces the
+ * whole user address space with the freshly validated ELF image.
+ *
+ * PID, the fd table, and the IPC handle table all survive.  The swap is
+ * atomic: the new image is validated and loaded into a *scratch* address
+ * space first, so a malformed image or an ENOMEM mid-load leaves the old
+ * image untouched and running.  Only after the scratch is fully built does
+ * the process switch CR3 and release the old lower half.
+ *
+ * The frame is rewritten in place (RIP/RSP become the new entry/stack) so
+ * syscall_exit finds it later; the thread's kernel stack and CR3 (now the
+ * new PML4) are updated to match.
+ *
+ * Returns the frame.  RAX holds 0 on success, or -errno (the loader's
+ * elf_status_t already is -errno shaped). */
+isr_frame_t *process_execve_current(isr_frame_t *frame, uint64_t upath) {
+    process_t *p = process_current();
+    if (!p || p->pid == 0) {
+        if (frame) frame->rax = (uint64_t)(int64_t)-VE_PERM;
+        return frame;
+    }
+    if (p->state == PROC_ZOMBIE) {
+        if (frame) frame->rax = (uint64_t)(int64_t)-VE_PERM;
+        return frame;
+    }
+
+    /* ── fetch the path: it is short, so a bounded kernel buffer is enough.
+     * The name is validated character-wise (a user could hand us 256 'A's).
+     * We deliberately DON'T trust the user string further than a fixed
+     * prefix: the embedded table only imagines short names. */
+    char name[32];
+    {
+        /* copy_from_user validates the whole range against the caller's PTEs
+         * and refuses non-present / non-user / non-writable pages, and won't
+         * cross the lower-half limit.  NULL or a bad pointer → EFAULT. */
+        if (!copy_from_user(p, name, upath, sizeof(name) - 1)) {
+            if (frame) frame->rax = (uint64_t)(int64_t)-VE_FAULT;
+            return frame;
+        }
+        name[sizeof(name) - 1] = '\0';
+    }
+
+    /* ── resolve the name to an embedded image ───────────────────────── */
+    elf_blob_t blob;
+    elf_status_t es = elf_find_embedded(name, &blob);
+    if (es != ELF_OK) {
+        if (frame) frame->rax = (uint64_t)(int64_t)es;
+        return frame;
+    }
+
+    /* Validate before touching anything: a malformed blob is rejected with
+     * the process intact. */
+    elf_loader_t ctx;
+    es = elf_validate(blob.base, blob.size, &ctx);
+    if (es != ELF_OK) {
+        if (frame) frame->rax = (uint64_t)(int64_t)es;
+        return frame;
+    }
+
+    /* ── scratch address space: new PML4 sharing the kernel upper half ──
+     * Loading into scratch means a failed load (NOMEM) never corrupts the
+     * live image.  We build a small transient `process_t` purely to hold the
+     * umap[] bookkeeping the loader writes through process_map_user(). */
+    uint64_t new_cr3 = address_space_create();
+    if (!new_cr3) {
+        if (frame) frame->rax = (uint64_t)(int64_t)-VE_NOMEM;
+        return frame;
+    }
+
+    process_t scratch = {0};
+    scratch.cr3 = new_cr3;
+    scratch.umap_count = 0;
+
+    uint64_t entry, rsp;
+    es = elf_load_into_process(&ctx, &scratch, &entry, &rsp);
+    if (es != ELF_OK) {
+        process_destroy_user_space(&scratch);   /* no upper half to preserve */
+        if (frame) frame->rax = (uint64_t)(int64_t)es;
+        return frame;
+    }
+
+    /* ── atomically swap the address space ───────────────────────────── */
+    /* Tear down the old user half; the new one slides in underneath the
+     * running thread.  The kernel upper half is shared by reference, so only
+     * the lower half is touched — exactly what process_destroy does. */
+    process_destroy_user_space(p);
+
+    /* Install the new space.  umap[] is copied from scratch so future teardown
+     * (exit, a second exec) frees the new pages. */
+    p->cr3 = new_cr3;
+    p->umap_count = scratch.umap_count;
+    for (uint32_t i = 0; i < scratch.umap_count; i++)
+        p->umap[i] = scratch.umap[i];
+    p->thread->cr3 = new_cr3;   /* scheduler switches to this CR3 next tick */
+
+    /* Load the new page tables NOW.  Just updating thread->cr3 is not enough:
+     * the CPU register still points at the old (now freed) PML4, and the
+     * scheduler only reloads CR3 when it actually switches to a thread in a
+     * *different* address space — if we're rescheduled alone, user code would
+     * run on the freed tables and fault.  Safe here: the new PML4 shares the
+     * kernel upper half by reference, so this higher-half code stays mapped
+     * across the load. */
+    __asm__ volatile ("mov %0, %%cr3" : : "r"(new_cr3) : "memory");
+
+    /* New entry + stack in the *current* frame; nothing else about the
+     * hardware context (GPRs, RFLAGS) changes — PID/fds/IPC all survive. */
+    frame->rip = entry;
+    frame->rsp = rsp;
+    frame->rax = 0;             /* sys_execve returns 0 on success */
+
+    kprintf("[PROC] pid %u exec: %s -> entry 0x%x, rsp 0x%x\n\r",
+            (uint64_t)p->pid, name, (uint64_t)entry, (uint64_t)rsp);
+
     return frame;
 }
 

@@ -17,6 +17,7 @@
 #define SYS_write       1
 #define SYS_sched_yield 24
 #define SYS_getpid      39
+#define SYS_execve      59
 #define SYS_exit        60
 #define SYS_wait4       61
 #define SYS_fork        67      /* Void slot (no Linux index)          */
@@ -77,6 +78,10 @@ static inline long sys_fork(void) {
 
 static inline long sys_wait4(long pid, long *ustatus, long options) {
     return syscall3(SYS_wait4, pid, (long)ustatus, options);
+}
+
+static inline long sys_execve(const char *path, long argv, long envp) {
+    return syscall3(SYS_execve, (long)path, argv, envp);
 }
 
 static inline void sys_exit(int status) {

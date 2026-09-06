@@ -74,6 +74,34 @@ void elf_init(void) {
 
 bool elf_nx_enabled(void) { return nx_ok; }
 
+/* ── embedded image table ────────────────────────────────────────────────
+ * There is no VFS yet: every executable the kernel can run is a fixed name
+ * built into .rodata by elf_blobs.asm.  execve() resolves the user's path
+ * against this table; a real filesystem replaces it wholesale later. */
+elf_status_t elf_find_embedded(const char *name, const elf_blob_t *out) {
+    static const struct { const char *name;
+                          const uint8_t *start, *end; } blobs[] = {
+        { "init",       elf_init_start,          elf_init_end          },
+        { "elf_test",   elf_test_start,          elf_test_end          },
+        { "ipc_test",   elf_ipc_test_start,      elf_ipc_test_end      },
+        { "fork_test",  elf_forkexec_test_start, elf_forkexec_test_end },
+    };
+
+    if (!name || !out) return ELF_ERR_INVAL;
+
+    for (uint64_t i = 0; i < sizeof(blobs) / sizeof(blobs[0]); i++) {
+        const char *a = name, *b = blobs[i].name;
+        int diff = 0;
+        do { diff = *a - *b; if (*a) a++; if (*b) b++; } while (diff == 0 && *a && *b);
+        if (diff == 0) {
+            ((elf_blob_t *)out)->base = blobs[i].start;
+            ((elf_blob_t *)out)->size = (uint64_t)(blobs[i].end - blobs[i].start);
+            return ELF_OK;
+        }
+    }
+    return ELF_ERR_NOEXEC;
+}
+
 /* ── program header accessor ─────────────────────────────────────────────
  * Only ever called after elf_validate() has confirmed the whole table lies
  * inside the image, so the arithmetic here cannot leave the buffer. */

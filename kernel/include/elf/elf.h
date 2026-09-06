@@ -127,4 +127,27 @@ struct process;
 elf_status_t elf_load_into_process(const elf_loader_t *ctx, struct process *p,
                                    uint64_t *out_entry, uint64_t *out_rsp);
 
+/* Resolve a user pathname to a kernel-resident executable image.
+ *
+ * There is no VFS yet, so every executable is a fixed name built into the
+ * kernel (kernel/elf/elf_blobs.asm): "init", "elf_test", "ipc_test",
+ * "fork_test".  This maps a short ASCII path to its (base,size) pair.
+ * Returns ELF_OK, or ELF_ERR_NOEXEC if the name is unknown.
+ *
+ * ponytail: when the VFS lands, execve() walks the filesystem here instead
+ * and this lookup disappears. */
+typedef struct {
+    const uint8_t *base;
+    uint64_t       size;
+} elf_blob_t;
+elf_status_t elf_find_embedded(const char *name, const elf_blob_t *out);
+
+/* The blobs are declared in kernel/elf/elf_blobs.asm and consumed only by
+ * elf_find_embedded(); execve() never touches the symbols directly. */
+extern const uint8_t elf_test_start[], elf_test_end[];
+extern const uint8_t elf_packed_start[], elf_packed_end[];
+extern const uint8_t elf_init_start[], elf_init_end[];
+extern const uint8_t elf_ipc_test_start[], elf_ipc_test_end[];
+extern const uint8_t elf_forkexec_test_start[], elf_forkexec_test_end[];
+
 #endif /* VOID_ELF_H */

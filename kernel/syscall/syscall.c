@@ -230,6 +230,9 @@ isr_frame_t *syscall_dispatch(isr_frame_t *frame) {
     case SYS_fork:
         return process_fork_current(frame);
 
+    case SYS_execve:
+        return process_execve_current(frame, frame->rdi);
+
     case SYS_wait4:
         return process_wait_current(frame, (pid_t_v)(int32_t)frame->rdi, frame->rsi);
 
