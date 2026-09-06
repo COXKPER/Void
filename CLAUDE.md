@@ -153,9 +153,27 @@ limine/                # Vendored Limine v9.6.7 (git submodule, DO NOT MODIFY)
 **Phase 6 — Next (NOT STARTED):**
 - fork() + execve() — POSIX process model
 - VFS layer + real file descriptors (open/read/close)
-- IPC (VFS node registry, circular ring buffers)
 - brk/mmap for user heap
 - Dynamic linking, libc services
+
+**Phase 6C-1 — Console Input (COMPLETE):**
+- ✅ serial_getchar() non-blocking UART input (COM1 RBR polled)
+- ✅ sys_read(0) syscall (SYS_read=0, Linux-compatible number)
+- ✅ copy_to_user() helper — HHDM + page-table walk (mirror of copy_from_user)
+- ✅ init.elf tests sys_read(0): non-blocking read with no data → returns 0
+- ✅ All Phase 4/5 regression tests still passing
+
+**Phase 7 — Void + Lux Merger: IPC Foundation (COMPLETE, first merger milestone):**
+- ✅ Void-native IPC: endpoints, per-process handle table, 512-byte tagged messages
+- ✅ Circular per-endpoint message queue (16 deep) in a global registry (1024 max)
+- ✅ Syscalls 62–65: ipc_endpoint_create, ipc_send, ipc_recv, ipc_close — ASYNC/poll semantics
+- ✅ No blocking yet; recv on empty queue returns 0 (poll). No VFS-backed /Devices/IPC nodes.
+- ✅ All user pointers (data, tag_out, data_out) validated via user_range_ok + HHDM copy
+- ✅ Endpoints die at process exit (not reap) via ipc_endpoint_unregister_by_owner — no dangling refs
+- ✅ Handle table lazily allocated on first IPC syscall, freed at process_destroy
+- ✅ userland/include/ipc.h wrappers use explicit R10 for arg3 (SYSCALL-clobbered RCX)
+- ✅ userland/ipc_test.c: 11/11 tests pass in QEMU (loopback, FIFO, EBADF, EFAULT, poll, close, getpid/write regressions)
+- ⚠️ Auth/security model not yet enforced (Lux's per-endpoint uid/gid check deferred — it needs a user model first)
 
 ## Key Design Decisions
 
@@ -177,4 +195,8 @@ limine/                # Vendored Limine v9.6.7 (git submodule, DO NOT MODIFY)
 
 9. **Ring 3 faults kill the process, Ring 0 faults panic**: `isr_dispatch` branches on `CS & 3`. A user fault prints diagnostics and calls `process_exit_current()` with a POSIX-shaped status (SIGSEGV=11 for #PF, SIGBUS=7 for #GP). Only kernel-mode faults are treated as unrecoverable.
 
-10. **Syscall numbers match Linux x86_64**: `write=1`, `sched_yield=24`, `getpid=39`, `exit=60`, `wait4=61`, and arg3 is passed in R10 (not RCX, which SYSCALL clobbers). This is ABI *number* compatibility to keep a future libc port shim-free — it is not a POSIX compliance claim.
+10. **Syscall numbers match Linux x86_64**: `read=0`, `write=1`, `sched_yield=24`, `getpid=39`, `exit=60`, `wait4=61`, then **62–65 are Void-native IPC** (`ipc_endpoint_create`, `ipc_send`, `ipc_recv`, `ipc_close` — no Linux equivalents, non-portable). arg3 is passed in R10 (not RCX, which SYSCALL clobbers). This is ABI *number* compatibility to keep a future libc port shim-free — it is not a POSIX compliance claim.
+
+11. **IPC uses endpoints + handles, not VFS nodes**: Endpoints are kernel-side, per-process message queues registered in a global table keyed by `(owner_pid, endpoint_id)`. Processes reference them through a per-process handle table (like FD table, capped at 64 handles). Messages are fixed 512-byte structs with inline data + tag. Async/polling for MVP — a real `sys_recv` block is deferred until there are wait queues. This keeps IPC self-contained and free of the not-yet-existing VFS.
+
+12. **Lux security model deferred, not dropped**: Lux's IPC enforces per-endpoint permissions (read/write UID checks). Void has no user concept yet (single root/ring-3), so the check would always pass — carrying it would be dead code. The endpoint/handle architecture leaves a clean seam to add a `uid` to the endpoint and gate at `ipc_send`/`ipc_recv` when user IDs land.
