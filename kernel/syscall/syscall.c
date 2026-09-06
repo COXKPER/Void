@@ -14,6 +14,7 @@
 #include <mm/pmm.h>
 #include <dev/serial.h>
 #include <void/boot.h>
+#include <void/voidfs.h>
 #include <ipc/ipc.h>
 #include <svc/svc.h>
 
@@ -136,13 +137,17 @@ bool copy_to_user(process_t *p, uint64_t udst, const void *src, uint64_t len) {
 }
 
 /* ── sys_read ────────────────────────────────────────────────────────────
- * Currently only FD_SERIAL (console) is supported. Reads from serial input
- * (RBR) on port COM1. Non-blocking: returns available chars or 0 if none ready.
- * Returns byte count, 0 (no data ready), or -error. */
+ * Dispatch on the fd type. FD_SERIAL (console) reads from serial input (RBR)
+ * on port COM1, non-blocking. FD_VFS serves from the embedded tree via the
+ * VFS layer. Returns byte count, 0 (no data / EOF), or -error. */
 static int64_t sys_read(process_t *p, int32_t fd, uint64_t ubuf, uint64_t count) {
     if (fd < 0 || fd >= MAX_FDS)        return -VE_BADF;
-    if (p->fds[fd].type != FD_SERIAL)   return -VE_BADF;
     if (count == 0)                     return 0;
+
+    if (p->fds[fd].type == FD_VFS)
+        return sys_vfs_read(p, fd, ubuf, count);
+
+    if (p->fds[fd].type != FD_SERIAL)   return -VE_BADF;
 
     /* Bounded staging buffer for reads */
     char buf[256];
@@ -175,12 +180,17 @@ static int64_t sys_read(process_t *p, int32_t fd, uint64_t ubuf, uint64_t count)
 }
 
 /* ── sys_write ───────────────────────────────────────────────────────────
- * Only console-backed descriptors exist right now; a real VFS replaces the
- * FD_SERIAL branch later without changing the ABI. */
+ * Dispatch on the fd type. FD_SERIAL writes to the console; FD_VFS goes to
+ * the VFS layer (which currently rejects writes — the tree is readonly).
+ * Returns byte count, or -error. */
 static int64_t sys_write(process_t *p, int32_t fd, uint64_t ubuf, uint64_t count) {
     if (fd < 0 || fd >= MAX_FDS)        return -VE_BADF;
-    if (p->fds[fd].type != FD_SERIAL)   return -VE_BADF;
     if (count == 0)                     return 0;
+
+    if (p->fds[fd].type == FD_VFS)
+        return sys_vfs_write(p, fd, ubuf, count);
+
+    if (p->fds[fd].type != FD_SERIAL)   return -VE_BADF;
 
     /* Bounded staging buffer: a huge count becomes several iterations
      * rather than a huge kernel stack frame. */
@@ -276,6 +286,33 @@ isr_frame_t *syscall_dispatch(isr_frame_t *frame) {
 
     case SYS_svc_lookup:
         frame->rax = (uint64_t)(int64_t)sys_sr_lookup((const char *)frame->rdi);
+        return frame;
+
+    case SYS_open:
+        frame->rax = (uint64_t)sys_vfs_open(p, frame->rdi, (int)frame->rsi);
+        return frame;
+
+    case SYS_close:
+        frame->rax = (uint64_t)sys_vfs_close(p, (int32_t)frame->rdi);
+        return frame;
+
+    case SYS_lseek:
+        frame->rax = (uint64_t)sys_vfs_lseek(p, (int32_t)frame->rdi,
+                                             (int64_t)frame->rsi,
+                                             (int)frame->rdx);
+        return frame;
+
+    case SYS_getcwd:
+        frame->rax = (uint64_t)sys_vfs_getcwd(p, frame->rdi, frame->rsi);
+        return frame;
+
+    case SYS_chdir:
+        frame->rax = (uint64_t)sys_vfs_chdir(p, frame->rdi);
+        return frame;
+
+    case SYS_readdir:
+        frame->rax = (uint64_t)sys_vfs_readdir(p, (int32_t)frame->rdi,
+                                               frame->rsi);
         return frame;
 
     default:

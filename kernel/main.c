@@ -12,6 +12,7 @@
 #include <sched/sched.h>
 #include <proc/process.h>
 #include <syscall/syscall.h>
+#include <void/voidfs.h>
 
 /* Forward declarations for subsystems */
 extern void gdt_init(void);
@@ -33,6 +34,7 @@ extern const uint8_t elf_forkexec_test_start[], elf_forkexec_test_end[];
 extern const uint8_t elf_calc_start[], elf_calc_end[];
 extern const uint8_t elf_srv_test_start[], elf_srv_test_end[];
 extern const uint8_t elf_lifecycle_test_start[], elf_lifecycle_test_end[];
+extern const uint8_t elf_vfs_test_start[], elf_vfs_test_end[];
 
 /* ELF self-check (kernel/elf/elf_selftest.c) */
 uint32_t elf_selftest(const void *image, uint64_t size);
@@ -152,6 +154,7 @@ void NO_RETURN kernel_main(void) {
     vmm_init();
     kheap_init();
 
+    voidfs_init();
     idt_register_irq(0, timer_handler);
     lapic_init(100);
 
@@ -219,6 +222,17 @@ void NO_RETURN kernel_main(void) {
         kprintf("[init] lifecycle test pid %u running.\n\r", (uint64_t)lifecycle_pid);
     } else {
         kprintf("[init] ERROR: lifecycle test spawn failed (%d)\n\r", (int)lifecycle_pid);
+    }
+
+    /* Phase 10 VFS test: open/read/close/cwd against the embedded tree. */
+    kprintf("[init] Spawning VFS test...\n\r");
+    pid_t_v vfs_test_pid = process_spawn_elf(elf_vfs_test_start,
+                                             (uint64_t)(elf_vfs_test_end - elf_vfs_test_start),
+                                             0);
+    if (vfs_test_pid > 0) {
+        kprintf("[init] VFS test pid %u running.\n\r", (uint64_t)vfs_test_pid);
+    } else {
+        kprintf("[init] ERROR: VFS test spawn failed (%d)\n\r", (int)vfs_test_pid);
     }
 
     sched_start();

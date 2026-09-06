@@ -68,3 +68,10 @@ global elf_lifecycle_test_end
 elf_lifecycle_test_start:
     incbin "build/userland/lifecycle_test.elf"
 elf_lifecycle_test_end:
+
+align 4096
+global elf_vfs_test_start
+global elf_vfs_test_end
+elf_vfs_test_start:
+    incbin "build/userland/vfs_test.elf"
+elf_vfs_test_end:
