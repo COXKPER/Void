@@ -7,6 +7,7 @@
 #include <mm/pmm.h>
 #include <mm/vmm.h>
 #include <void/boot.h>
+#include <void/kpanic.h>
 #include <dev/serial.h>
 
 /* ── heap virtual address range ──────────────────────────────────────── */
@@ -76,35 +77,38 @@ void kheap_init(void) {
             KHEAP_START, head->size);
 }
 
-/* ── split a block if it's big enough ────────────────────────────────── */
-static void split_block(block_t *b, uint64_t size) {
-    uint64_t remaining = b->size - size - HEADER_SIZE;
-    if (remaining < 16) return;  /* not worth splitting */
-
-    block_t *new_block = (block_t *)((uint8_t *)b + HEADER_SIZE + size);
-    new_block->size = remaining;
-    new_block->free = true;
-    new_block->next = b->next;
-
-    b->size = size;
-    b->next = new_block;
-}
-
 /* ── kmalloc ─────────────────────────────────────────────────────────── */
 void *kmalloc(uint64_t size) {
     if (size == 0) return NULL;
     size = ALIGN_UP(size, 16);  /* 16-byte alignment */
 
-    /* First fit */
-    block_t *cur = head;
-    while (cur) {
+    /* First fit.  The winner is *unlinked* (its predecessor now points at
+     * its remainder / successor) and split in place, so the allocated half
+     * is never also reachable from the free list.  A split that left the
+     * winner linked — then freed and re-split later — made the same block
+     * reachable twice and grew the freelist into cycles. */
+    block_t **scan = &head;
+    while (*scan) {
+        block_t *cur = *scan;
         if (cur->free && cur->size >= size) {
-            split_block(cur, size);
+            uint64_t remaining = cur->size - size - HEADER_SIZE;
+            if (remaining >= 16) {
+                block_t *rem = (block_t *)((uint8_t *)cur + HEADER_SIZE + size);
+                rem->size  = remaining;
+                rem->free  = true;
+                rem->next  = cur->next;   /* remainder keeps the successor */
+                cur->size  = size;
+                cur->next  = NULL;        /* cur leaves the free list */
+                *scan      = rem;         /* ... remainder takes its place */
+            } else {
+                *scan      = cur->next;   /* no room to split: just pop */
+                cur->next  = NULL;
+            }
             cur->free = false;
             bytes_used += cur->size;
             return (void *)((uint8_t *)cur + HEADER_SIZE);
         }
-        cur = cur->next;
+        scan = &cur->next;
     }
 
     /* No free block — grow the heap */
@@ -113,38 +117,54 @@ void *kmalloc(uint64_t size) {
     if (!heap_grow(total_need))
         return NULL;
 
-    /* Create a new block at old_top */
-    block_t *new_block = (block_t *)old_top;
-    new_block->size = (heap_top - old_top) - HEADER_SIZE;
-    new_block->free = true;
-    new_block->next = NULL;
+    /* Fresh block grows at old_top.  Merge it with the (possibly free)
+     * tail first, then split it — keeping the remainder in the list and
+     * handing the allocated half out (same discipline as first-fit). */
+    block_t *b   = (block_t *)old_top;
+    uint64_t bsz  = (heap_top - old_top) - HEADER_SIZE;
 
-    /* Append to list */
-    if (!head) {
-        head = new_block;
-    } else {
-        block_t *tail = head;
-        while (tail->next) tail = tail->next;
-        /* If tail is free and adjacent, coalesce instead of appending */
-        if (tail->free && (uint8_t *)tail + HEADER_SIZE + tail->size == (uint8_t *)new_block) {
-            tail->size += HEADER_SIZE + new_block->size;
-            new_block = tail;
+    block_t **slot = &head;
+    if (head) {
+        while ((*slot)->next) slot = &(*slot)->next;   /* walk to tail   */
+        block_t *tail = *slot;
+        if (tail->free &&
+            (uint8_t *)tail + HEADER_SIZE + tail->size == (uint8_t *)b) {
+            tail->size += HEADER_SIZE + bsz;           /* coalesce into tail */
+            b    = tail;
+            bsz  = tail->size;
         } else {
-            tail->next = new_block;
+            tail->next = b;                            /* append */
+            slot = &tail->next;
         }
     }
 
-    /* Now allocate from the new block */
-    split_block(new_block, size);
-    new_block->free = false;
-    bytes_used += new_block->size;
-    return (void *)((uint8_t *)new_block + HEADER_SIZE);
+    /* b is now the tail node holding bsz bytes; split and allocate. */
+    uint64_t remaining = bsz - size - HEADER_SIZE;
+    if (remaining >= 16) {
+        block_t *rem = (block_t *)((uint8_t *)b + HEADER_SIZE + size);
+        rem->size  = remaining;
+        rem->free  = true;
+        rem->next  = NULL;         /* rem is the new tail */
+        b->size    = size;
+        b->next    = NULL;
+        *slot      = rem;          /* remainder stays on the list  */
+    } else {
+        *slot = (b->next);         /* no remainder: pop b wholly  */
+        b->next = NULL;
+    }
+    b->free = false;
+    bytes_used += b->size;
+    return (void *)((uint8_t *)b + HEADER_SIZE);
 }
 
 /* ── coalesce adjacent free blocks ───────────────────────────────────── */
 static void coalesce(void) {
     block_t *cur = head;
+    uint64_t guard = 0;
     while (cur && cur->next) {
+        /* A freelist that ever cycles (heap corruption) would spin here
+         * forever; treat that as fatal rather than hang. */
+        if (++guard > 1000000) kpanic("kheap freelist cycle");
         if (cur->free && cur->next->free) {
             cur->size += HEADER_SIZE + cur->next->size;
             cur->next = cur->next->next;
