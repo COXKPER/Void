@@ -4,6 +4,7 @@
  */
 #include <void/types.h>
 #include <void/boot.h>
+#include <dev/console.h>
 #include <dev/serial.h>
 #include <arch/x86_64/idt.h>
 #include <dev/lapic.h>
@@ -124,6 +125,7 @@ static void init_thread(void *arg) {
  * ════════════════════════════════════════════════════════════════════════ */
 void NO_RETURN kernel_main(void) {
     serial_init();
+    console_init();
     kprintf("\n\r[VoidOS] Bootstrapping kernel...\n\r");
 
     boot_init();
