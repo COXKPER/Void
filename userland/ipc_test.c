@@ -25,13 +25,17 @@ void print_test(const char *name, int result) {
 int main(void) {
     sys_write(1, "[IPC test] Starting...\n", 23);
 
-    /* Test 1: Create endpoint — minimal verification */
+    /* Test 1: Create endpoint */
     long h = ipc_endpoint_create();
 
     if (h >= 0) {
-        sys_write(1, "[IPC] PASS: endpoint created\n", 29);
+        sys_write(1, "[IPC] endpoint created with handle = ", 37);
+        /* Write decimal handle */
+        char digit = '0' + (h & 0xF);
+        sys_write(1, &digit, 1);
+        sys_write(1, "\n", 1);
     } else {
-        sys_write(1, "[IPC] FAIL: endpoint creation\n", 30);
+        sys_write(1, "[IPC] endpoint creation failed\n", 31);
     }
 
     sys_write(1, "[IPC test] Done.\n", 16);
