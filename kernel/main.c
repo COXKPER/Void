@@ -28,6 +28,7 @@ extern const uint8_t user_bad_start[],  user_bad_end[];
 extern const uint8_t elf_test_start[], elf_test_end[];
 extern const uint8_t elf_packed_start[], elf_packed_end[];
 extern const uint8_t elf_init_start[], elf_init_end[];
+extern const uint8_t elf_ipc_test_start[], elf_ipc_test_end[];
 
 /* ELF self-check (kernel/elf/elf_selftest.c) */
 uint32_t elf_selftest(const void *image, uint64_t size);
