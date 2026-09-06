@@ -154,6 +154,17 @@ void NO_RETURN kernel_main(void) {
 
     sched_create_kthread(init_thread, NULL);
 
+    /* Phase 7 IPC test: spawn and wait for completion */
+    kprintf("[init] Spawning IPC test...\n\r");
+    pid_t_v ipc_test_pid = process_spawn_elf(elf_ipc_test_start,
+                                             (uint64_t)(elf_ipc_test_end - elf_ipc_test_start),
+                                             0);
+    if (ipc_test_pid > 0) {
+        kprintf("[init] IPC test pid %u running.\n\r", (uint64_t)ipc_test_pid);
+    } else {
+        kprintf("[init] ERROR: IPC test spawn failed (%d)\n\r", (int)ipc_test_pid);
+    }
+
     sched_start();
     interrupts_enable();
     kprintf("[VoidOS] Ready.\n\r");
