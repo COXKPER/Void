@@ -151,8 +151,6 @@ limine/                # Vendored Limine v9.6.7 (git submodule, DO NOT MODIFY)
 - ✅ All Phase 4 regression tests still passing
 
 **Phase 6 — Next (NOT STARTED):**
-- fork() + execve() — POSIX process model
-- VFS layer + real file descriptors (open/read/close)
 - brk/mmap for user heap
 - Dynamic linking, libc services
 
@@ -175,6 +173,25 @@ limine/                # Vendored Limine v9.6.7 (git submodule, DO NOT MODIFY)
 - ✅ userland/ipc_test.c: 11/11 tests pass in QEMU (loopback, FIFO, EBADF, EFAULT, poll, close, getpid/write regressions)
 - ⚠️ Auth/security model not yet enforced (Lux's per-endpoint uid/gid check deferred — it needs a user model first)
 
+**Phase 8 — fork() + execve() + Process Lifecycle (COMPLETE, second merger milestone):**
+- ✅ SYS_fork (67, Void slot): `process_fork_current()` — eager private copy of every user page
+- ✅ Eager copy, NOT copy-on-write — Void has no user-PF handler or frame refcounts, so shared pages would double-free on independent exit. Correctness first. (COW when uPF + refcounts land.)
+- ✅ SYS_execve (59, Linux number): `process_execve_current()` — atomic scratch-space → live-space swap, PID preserved
+- ✅ Exec image source is a kernel-resident embedded blob (no VFS): `elf_find_embedded()` resolves short names (init / elf_test / ipc_test / fork_test)
+- ✅ Invalid ELF / unknown name → -ENOEXEC, bad pointer → -EFAULT, old image keeps running (validation+load happen before any live-space change)
+- ✅ CR3 reloaded explicitly in exec (thread->cr3 alone leaves the CPU on freed tables when rescheduled alone)
+- ✅ Orphans reparented on exit (to the exiting process's parent; chain terminates at immortal pid 0), so no zombie is unreachable
+- ✅ pid-0 children reaped by the kernel idle loop — no boot-test PID-slot leak
+- ✅ `process_destroy_user_space()` extracted, shared by destroy/exit/exec swap
+- ✅ userland/forkexec_test.c: 8-bit-check suite — fork PIDs, address-space privacy, .data inheritance, wait4 reap, exec PID preservation, -ENOEXEC, -EFAULT — all pass (checks=0xFF)
+- ✅ Full regression rerun in QEMU (×3): all 11 Phase 7 IPC tests, getpid/write/sys_read, address-space isolation, init.elf (status 42)
+
+**Phase 9 — Next (NOT STARTED):**
+- VFS layer + real file descriptors (open/read/close)
+- brk/mmap for user heap
+- Dynamic linking, libc services
+- Signals (deferred per Phase 8 spec)
+
 ## Key Design Decisions
 
 1. **Single source of truth for boot info**: Only `boot.c` includes `<boot/limine.h>`. All other kernel code reads from the `g_boot` singleton defined in `<void/boot.h>`. This isolates the Limine protocol as an implementation detail.
@@ -195,8 +212,16 @@ limine/                # Vendored Limine v9.6.7 (git submodule, DO NOT MODIFY)
 
 9. **Ring 3 faults kill the process, Ring 0 faults panic**: `isr_dispatch` branches on `CS & 3`. A user fault prints diagnostics and calls `process_exit_current()` with a POSIX-shaped status (SIGSEGV=11 for #PF, SIGBUS=7 for #GP). Only kernel-mode faults are treated as unrecoverable.
 
-10. **Syscall numbers match Linux x86_64**: `read=0`, `write=1`, `sched_yield=24`, `getpid=39`, `exit=60`, `wait4=61`, then **62–65 are Void-native IPC** (`ipc_endpoint_create`, `ipc_send`, `ipc_recv`, `ipc_close` — no Linux equivalents, non-portable). arg3 is passed in R10 (not RCX, which SYSCALL clobbers). This is ABI *number* compatibility to keep a future libc port shim-free — it is not a POSIX compliance claim.
+10. **Syscall numbers match Linux x86_64**: `read=0`, `write=1`, `sched_yield=24`, `getpid=39`, `execve=59`, `exit=60`, `wait4=61`, then **62–65 are Void-native IPC** (`ipc_endpoint_create`, `ipc_send`, `ipc_recv`, `ipc_close`), and **67 is Void-native `fork`** (no Linux index). arg3 is passed in R10 (not RCX, which SYSCALL clobbers). This is ABI *number* compatibility to keep a future libc port shim-free — it is not a POSIX compliance claim.
 
 11. **IPC uses endpoints + handles, not VFS nodes**: Endpoints are kernel-side, per-process message queues registered in a global table keyed by `(owner_pid, endpoint_id)`. Processes reference them through a per-process handle table (like FD table, capped at 64 handles). Messages are fixed 512-byte structs with inline data + tag. Async/polling for MVP — a real `sys_recv` block is deferred until there are wait queues. This keeps IPC self-contained and free of the not-yet-existing VFS.
 
 12. **Lux security model deferred, not dropped**: Lux's IPC enforces per-endpoint permissions (read/write UID checks). Void has no user concept yet (single root/ring-3), so the check would always pass — carrying it would be dead code. The endpoint/handle architecture leaves a clean seam to add a `uid` to the endpoint and gate at `ipc_send`/`ipc_recv` when user IDs land.
+
+13. **fork uses eager page copy, not COW**: `process_fork_current()` allocates a fresh frame for every umap[] entry the parent has mapped and copies it — nothing is shared at the page level, and the child honours the same WRITE/NX flags by re-reading the parent's PTE. **Why not COW**: Void has no on-demand user page-fault handler (a Ring-3 #PF kills the process) and no per-frame refcounting, so a COW mapping would be owned by two processes that both free it on exit — a double-free. Correct eager copy first; COW is marked as the upgrade path and is safe once a user-PF path and frame refcounts exist. Cost is up to ~64 pages copied per fork, an acceptable trade for a microkernel with few, short-lived processes.
+
+14. **exec is an atomic swap into a scratch address space**: `process_execve_current()` validates the ELF and loads it into a *fresh* PML4 (sharing the kernel upper half) before touching the live one. Only after the scratch is fully built does it: free the old user pages + lower-half tables, install the new CR3, and **explicitly reload the CPU CR3** — updating `thread->cr3` alone is a bug because the scheduler only reloads CR3 when switching to a *different* address space, so a rescheduled exec'd thread would run on freed tables. Any failure before the swap leaves the old image intact and returns -errno. PID, fd table, and IPC handle table all survive.
+
+15. **exec resolves names to embedded blobs (no VFS yet)**: every runnable executable is a fixed short name (`init`, `elf_test`, `ipc_test`, `fork_test`) held in the kernel's `.rodata` via `elf_blobs.asm`. `elf_find_embedded()` maps a validated user pathname to its (base,size). When the VFS lands, execve walks the filesystem here instead and the lookup disappears.
+
+16. **Fork children inherit a copy of the IPC handle table**: `process_fork_current()` deep-copies the child's handle-table *entries* (they name `(target_pid, endpoint_id)`), so the child references the same endpoints the parent does. Endpoints themselves are never duplicated and stay single-owner by pid — `ipc_endpoint_unregister_by_owner()` frees only the endpoints a given pid owns, so when parent and child exit independently nothing is double-freed. No reference counting is introduced (the spec explicitly forbade "incorrect refcounting").
