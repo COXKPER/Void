@@ -36,7 +36,9 @@ typedef struct {
 /* ── Per-Process Handle Table ────────────────────────────────────── */
 struct ipc_handle_table {
     ipc_handle_entry_t handles[IPC_MAX_HANDLES];
-    uint32_t next_local_endpoint_id;            /* Counter for creating new endpoints */
+    /* An endpoint's id is its OWNER'S handle number, so (owner_pid, handle)
+     * is a stable, portable, globally-unique endpoint name.  No separate
+     * counter is needed; ipc_endpoint_create uses the handle number. */
 };
 
 /* ── Global Endpoint Registry ────────────────────────────────────── */

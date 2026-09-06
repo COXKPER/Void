@@ -84,5 +84,11 @@ int32_t sys_ipc_send(int32_t dest_handle, uint32_t tag,
 int32_t sys_ipc_recv(int32_t handle, uint32_t *tag_out,
                      void *data_out, uint32_t max_len);
 int32_t sys_ipc_close(int32_t handle);
+int32_t sys_ipc_connect(int32_t target_pid, uint32_t serv_endpoint_id);
+
+/* ── Service registry syscall handlers (Phase 9) ──────────────────── */
+int32_t sys_sr_register(const char *name, int32_t handle);
+int32_t sys_sr_unregister(const char *name, int32_t handle);
+int32_t sys_sr_lookup(const char *name);
 
 #endif /* VOID_SYSCALL_H */

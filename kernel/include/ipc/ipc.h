@@ -21,6 +21,7 @@
 #define SYS_ipc_send             63
 #define SYS_ipc_recv             64
 #define SYS_ipc_close            65
+#define SYS_ipc_connect          66
 
 /* ── Constants ────────────────────────────────────────────────────── */
 #define IPC_MAX_HANDLES       64
@@ -71,6 +72,16 @@ int32_t sys_ipc_recv(int32_t handle, uint32_t *tag_out,
  * Subsequent sends to this endpoint will fail with -EBADF.
  * Returns 0 on success, negative error code on failure. */
 int32_t sys_ipc_close(int32_t handle);
+
+/* Connect a local handle to a remote process's endpoint, so an ipc_send /
+ * ipc_recv on the new handle carries messages to/from that endpoint.  This
+ * is the data-plane half of service discovery: sr_lookup returns a handle
+ * already aimed at the registered endpoint, and a server calls ipc_connect
+ * to open a handle back to a client's endpoint (so it can reply or push).
+ * target_pid/serv_endpoint_id must name a *live* endpoint; the kernel
+ * re-checks it here so handles can never outlive the endpoint they name.
+ * Returns the new handle (0–63) or negative error code. */
+int32_t sys_ipc_connect(pid_t_v target_pid, uint32_t serv_endpoint_id);
 
 /* ── Kernel-internal declarations (for process.h integration) ────── */
 

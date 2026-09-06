@@ -15,6 +15,7 @@
 #include <dev/serial.h>
 #include <void/boot.h>
 #include <ipc/ipc.h>
+#include <svc/svc.h>
 
 /* ── MSRs ────────────────────────────────────────────────────────────── */
 #define IA32_EFER   0xC0000080
@@ -256,6 +257,25 @@ isr_frame_t *syscall_dispatch(isr_frame_t *frame) {
 
     case SYS_ipc_close:
         frame->rax = (uint64_t)(int64_t)sys_ipc_close((int32_t)frame->rdi);
+        return frame;
+
+    case SYS_ipc_connect:
+        frame->rax = (uint64_t)(int64_t)sys_ipc_connect(
+            (pid_t_v)(int32_t)frame->rdi, (uint32_t)frame->rsi);
+        return frame;
+
+    case SYS_svc_name_register:
+        frame->rax = (uint64_t)(int64_t)sys_sr_register(
+            (const char *)frame->rdi, (int32_t)frame->rsi);
+        return frame;
+
+    case SYS_svc_name_unregister:
+        frame->rax = (uint64_t)(int64_t)sys_sr_unregister(
+            (const char *)frame->rdi, (int32_t)frame->rsi);
+        return frame;
+
+    case SYS_svc_lookup:
+        frame->rax = (uint64_t)(int64_t)sys_sr_lookup((const char *)frame->rdi);
         return frame;
 
     default:

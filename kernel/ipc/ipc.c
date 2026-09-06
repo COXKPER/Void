@@ -11,6 +11,8 @@
 #include <void/boot.h>
 #include <dev/serial.h>
 #include <mm/kheap.h>
+#include <svc/svc.h>           /* ipc_connect_message_t */
+#include <svc/svc_internal.h>  /* svc_on_endpoint_close hook                  */
 
 /* ── Global Endpoint Registry ────────────────────────────────────── */
 ipc_endpoint_registry_entry_t ipc_endpoint_registry[IPC_MAX_TOTAL_ENDPOINTS];
@@ -106,7 +108,6 @@ static ipc_handle_table_t *handle_table_create(void) {
         table->handles[i].target_pid = 0;
         table->handles[i].target_endpoint_id = 0;
     }
-    table->next_local_endpoint_id = 0;
 
     return table;
 }
@@ -151,9 +152,10 @@ int32_t sys_ipc_endpoint_create(void) {
     ipc_endpoint_t *ep = kmalloc(sizeof(ipc_endpoint_t));
     if (!ep) return -VE_NOMEM;
 
-    /* Initialize endpoint */
+    /* Initialize endpoint.  The endpoint id is this handle's number, so
+     * (owner_pid, handle) is the stable portable name of the endpoint. */
     ep->owner_pid = p->pid;
-    ep->endpoint_id = p->ipc_handles->next_local_endpoint_id++;
+    ep->endpoint_id = (uint32_t)handle;
     ep->flags = 0;
     ep->queue_head = 0;
     ep->queue_tail = 0;
@@ -295,6 +297,46 @@ int32_t sys_ipc_recv(int32_t handle, uint32_t *tag_out,
     return (int32_t)copy_len;
 }
 
+/* ── ipc_connect ─────────────────────────────────────────────────────────
+ * Mint a local handle pointing at a remote process's (live) endpoint.
+ * Target-pid → target_endpoint_id is validated here (the endpoint must still
+ * exist), so a connected handle can never outlive the endpoint it names.
+ * The server side of a request/response wraps a client's connect-message
+ * into one of these, then replies with a plain ipc_send on the result. */
+int32_t sys_ipc_connect(pid_t_v target_pid, uint32_t serv_endpoint_id) {
+    process_t *p = process_current();
+    if (!p) return -VE_PERM;
+
+    /* The target endpoint must exist right now; a closed or owner-dead
+     * endpoint fails this lookup and connect returns -EBADF. */
+    ipc_endpoint_t *ep = ipc_endpoint_lookup(target_pid, serv_endpoint_id);
+    if (!ep || (ep->flags & IPC_ENDPOINT_CLOSED)) {
+        return -VE_BADF;
+    }
+
+    /* Lazy-allocate handle table if needed */
+    if (!p->ipc_handles) {
+        p->ipc_handles = ipc_handle_table_create();
+        if (!p->ipc_handles) return -VE_NOMEM;
+    }
+
+    /* Find a free handle slot */
+    int32_t handle = -1;
+    for (int i = 0; i < IPC_MAX_HANDLES; i++) {
+        if (!(p->ipc_handles->handles[i].flags & IPC_HANDLE_ALLOCATED)) {
+            handle = i;
+            break;
+        }
+    }
+    if (handle < 0) return -VE_NOMEM;   /* no free handles */
+
+    p->ipc_handles->handles[handle].flags              = IPC_HANDLE_ALLOCATED;
+    p->ipc_handles->handles[handle].target_pid         = target_pid;
+    p->ipc_handles->handles[handle].target_endpoint_id = serv_endpoint_id;
+
+    return handle;
+}
+
 int32_t sys_ipc_close(int32_t handle) {
     process_t *p = process_current();
     if (!p) return -VE_PERM;
@@ -325,6 +367,10 @@ int32_t sys_ipc_close(int32_t handle) {
     if (ep && ep->owner_pid == p->pid) {
         /* We own this endpoint, mark it closed */
         ep->flags |= IPC_ENDPOINT_CLOSED;
+
+        /* Drop any service name that pointed at it; a closed endpoint must
+         * never stay discoverable by name. */
+        svc_on_endpoint_close(p->pid, handle_entry->target_endpoint_id);
     }
 
     /* Deallocate handle */
