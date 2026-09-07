@@ -34,6 +34,21 @@ static void print_dec(long v) {
 
 static void say(const char *s, int n) { sys_write(1, s, n); }
 
+/* Print "<pre><count> fail(s)\n" as ONE sys_write: split writes let other
+ * processes' bytes interleave into the shared COM1 between them, tearing the
+ * "[VFS test] Done:" line the boot regression greps for. */
+static void say_done(const char *pre) {
+    char buf[64]; size_t n = 0;
+    while (*pre && n < 48) buf[n++] = *pre++;
+    char dec[16]; int i = 0;
+    if (failures == 0) dec[i++] = '0';
+    else { long v = failures; while (v > 0 && i < 14) { dec[i++] = '0' + (char)(v % 10); v /= 10; } }
+    while (i > 0 && n < 62) buf[n++] = dec[--i];
+    const char *post = " fail(s)\n";
+    while (*post && n < 63) buf[n++] = *post++;
+    sys_write(1, buf, (long)n);
+}
+
 /* check("open exists", 11, fd, -1, fd >= 3)  →  PASS (got 3 expect >=3) */
 static void check(const char *name, int len, long got, const char *expect,
                   int pass) {
@@ -154,8 +169,6 @@ int main(void) {
     long ts = sys_open("/hello.txt/", O_RDONLY);
     check("file slash", 10, ts, "-20", ts == -20);
 
-    say("[VFS test] Done: ", 18);
-    print_dec(failures);
-    say(" fail(s)\n", 9);
+    say_done("[VFS test] Done: ");
     return (failures == 0) ? 0 : 1;
 }

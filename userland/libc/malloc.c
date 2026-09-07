@@ -187,6 +187,17 @@ static int arena_grow(size_t need) {
 
 static size_t align16(size_t n) { return (n + 15) & ~(size_t)15; }
 
+/* User size -> full block size (header + aligned payload), or 0 when the
+ * addition would overflow.  Callers treat 0 as allocation failure — this is
+ * what makes realloc(huge) return NULL (and keep the original) instead of
+ * wrapping into a small block and "shrinking" into it. */
+static size_t size_to_need(size_t size) {
+    if (size > (size_t)-1 - (HEADER_SZ + 15)) return 0;
+    size_t need = HEADER_SZ + align16(size);
+    if (need < MIN_BLOCK) need = MIN_BLOCK;
+    return need;
+}
+
 /* First-fit cut of a free block covering >= need bytes, returning the
  * 16-aligned payload, or NULL.  Splits the remainder when it is large
  * enough to be its own block. */
@@ -227,8 +238,8 @@ static void *cut_first_fit(size_t need) {
  * B_MMAP, so free() branches on the flag and munmaps instead of touching
  * the free list.  Page-rounded to the kernel's 4 KiB granularity. */
 static void *mmap_alloc(size_t size) {
-    size_t need = HEADER_SZ + align16(size);
-    if (need < MIN_BLOCK) need = MIN_BLOCK;
+    size_t need = size_to_need(size);
+    if (need == 0) return NULL;
     size_t rounded = (need + PAGE_SZ - 1) / PAGE_SZ * PAGE_SZ;
 
     void *base = sys_mmap((void *)0, rounded, PROT_READ | PROT_WRITE,
@@ -242,8 +253,8 @@ static void *mmap_alloc(size_t size) {
 }
 
 static void *heap_alloc(size_t size) {
-    size_t need = HEADER_SZ + align16(size);
-    if (need < MIN_BLOCK) need = MIN_BLOCK;
+    size_t need = size_to_need(size);
+    if (need == 0) return NULL;
 
     if (arena_init() != 0) return NULL;
 
@@ -325,8 +336,8 @@ void *realloc(void *ptr, size_t size) {
     char *blk = (char *)ptr - (ptrdiff_t)HEADER_SZ;
     btag_t *h = H(blk);
     size_t old_size = h->size - HEADER_SZ;         /* user bytes            */
-    size_t new_need = HEADER_SZ + align16(size);
-    if (new_need < MIN_BLOCK) new_need = MIN_BLOCK;
+    size_t new_need = size_to_need(size);
+    if (new_need == 0) return NULL;                /* absurd size: fail, keep original */
 
     /* Shrink (or same size): split the tail off the block in place — safe
      * for brk-heap blocks; mmap blocks simply keep their full mapping. */

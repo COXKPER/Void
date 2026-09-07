@@ -17,22 +17,28 @@
 #include <void.h>
 #include <ipc.h>
 
-/* Print a small positive integer in decimal to fd 1. */
-static void print_dec(long v) {
-    char buf[16];
-    int i = 0;
-    if (v == 0) { buf[i++] = '0'; }
-    while (v > 0 && i < (int)sizeof(buf) - 1) {
-        buf[i++] = '0' + (char)(v % 10);
-        v /= 10;
-    }
-    while (i > 0) sys_write(1, &buf[--i], 1);
+
+static int failures;
+
+/* Print "<pre><count> fail(s)\n" as ONE sys_write.  The old split across
+ * three calls let other processes' bytes interleave into the shared COM1
+ * stream between the writes, tearing the "[IPC test] Done:" line the boot
+ * regression greps for. */
+static void say_done(const char *pre) {
+    char buf[48]; size_t n = 0;
+    while (*pre && n < 46) buf[n++] = *pre++;
+    char dec[16]; int i = 0;
+    if (failures == 0) dec[i++] = '0';
+    else { long v = failures; while (v > 0 && i < 14) { dec[i++] = '0' + (char)(v % 10); v /= 10; } }
+    while (i > 0 && n < 47) buf[n++] = dec[--i];
+    const char *post = " fail(s)\n";
+    while (*post && n < 48) buf[n++] = *post++;
+    sys_write(1, buf, (long)n);
 }
 
 /* All test names are const string literals held in .rodata.  Each one is
  * printed via its own sys_write call — no runtime strlen over user memory,
  * which is exactly the path being exercised. */
-static int failures;
 
 static void check(const char *name, int len, long got, const char *expect, int pass) {
     if (!pass) failures++;
@@ -109,8 +115,6 @@ int main(void) {
     long w = sys_write(1, "[IPC] write works\n", 18);
     check("write", 5, w, "18", w == 18);
 
-    sys_write(1, "[IPC test] Done: ", 17);
-    print_dec(failures);
-    sys_write(1, " fail(s)\n", 9);
+    say_done("[IPC test] Done: ");
     return (failures == 0) ? 0 : 1;
 }

@@ -25,13 +25,32 @@
 #define OP_KILL     2
 
 static int failures;
-static void say(const char *s) { sys_write(1, s, 16); }
+static void say(const char *s) {
+    size_t n = 0;
+    while (s[n]) n++;                 /* length, not a hardcoded 16        */
+    sys_write(1, s, (long)n);
+}
 static void print_dec(long v) {
     char buf[16]; int i = 0;
     if (v == 0) buf[i++] = '0';
     if (v < 0) { sys_write(1, "-", 1); v = -v; }
     while (v > 0 && i < 15) { buf[i++] = '0' + (char)(v % 10); v /= 10; }
     while (i > 0) sys_write(1, &buf[--i], 1);
+}
+/* Print `pre`, the failure count, and `fail(s)` as ONE sys_write: splitting
+ * it across say()/print_dec() lets concurrent processes' bytes interleave
+ * into the shared COM1 stream between the writes and tear the marker line
+ * the boot regression greps for. */
+static void say_done_marker(const char *pre) {
+    char buf[64]; size_t i = 0;
+    while (*pre && i < 62) buf[i++] = *pre++;
+    char dec[16]; int j = 0; long v = failures;
+    if (v == 0) dec[j++] = '0';
+    while (v > 0 && j < 14) { dec[j++] = '0' + (char)(v % 10); v /= 10; }
+    while (j > 0 && i < 63) buf[i++] = dec[--j];
+    const char *post = " fail(s)\n";
+    while (*post && i < 64) buf[i++] = *post++;
+    sys_write(1, buf, (long)i);
 }
 
 /* ── the short-lived service (child) ──────────────────────────────────── */
@@ -128,9 +147,7 @@ static void drive(void) {
     say("[lifetest] lookup after exit -ENOENT: ");
     say(gone_ok ? "PASS\n" : "FAIL\n");
 
-    say("[lifetest] Done: ");
-    print_dec(failures);
-    say(" fail(s)\n");
+    say_done_marker("[lifetest] Done: ");
 }
 
 int main(void) {

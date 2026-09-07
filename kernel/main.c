@@ -39,6 +39,7 @@ extern const uint8_t elf_srv_test_start[], elf_srv_test_end[];
 extern const uint8_t elf_lifecycle_test_start[], elf_lifecycle_test_end[];
 extern const uint8_t elf_vfs_test_start[], elf_vfs_test_end[];
 extern const uint8_t elf_mm_test_start[], elf_mm_test_end[];
+extern const uint8_t elf_malloc_test_start[], elf_malloc_test_end[];
 
 /* ELF self-check (kernel/elf/elf_selftest.c) */
 uint32_t elf_selftest(const void *image, uint64_t size);
@@ -256,6 +257,17 @@ void NO_RETURN kernel_main(void) {
         kprintf("[init] mm test pid %u running.\n\r", (uint64_t)mm_test_pid);
     } else {
         kprintf("[init] ERROR: mm test spawn failed (%d)\n\r", (int)mm_test_pid);
+    }
+
+    /* Phase 13 malloc test: userland allocator / libc runtime. */
+    kprintf("[init] Spawning malloc test...\n\r");
+    pid_t_v malloc_test_pid = process_spawn_elf(elf_malloc_test_start,
+                                                (uint64_t)(elf_malloc_test_end - elf_malloc_test_start),
+                                                0);
+    if (malloc_test_pid > 0) {
+        kprintf("[init] malloc test pid %u running.\n\r", (uint64_t)malloc_test_pid);
+    } else {
+        kprintf("[init] ERROR: malloc test spawn failed (%d)\n\r", (int)malloc_test_pid);
     }
 
     sched_start();

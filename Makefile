@@ -31,7 +31,11 @@ override UCFLAGS := -std=c2x -Wall -Wextra -O2 \
 
 override ULDFLAGS := -nostdlib -static -z max-page-size=0x1000 -z noexecstack
 
-UELF := build/userland/elf_test.elf build/userland/elf_packed.elf build/userland/init.elf build/userland/ipc_test.elf build/userland/forkexec_test.elf build/userland/calc.elf build/userland/srv_test.elf build/userland/lifecycle_test.elf build/userland/vfs_test.elf build/userland/mm_test.elf
+UELF := build/userland/elf_test.elf build/userland/elf_packed.elf build/userland/init.elf build/userland/ipc_test.elf build/userland/forkexec_test.elf build/userland/calc.elf build/userland/srv_test.elf build/userland/lifecycle_test.elf build/userland/vfs_test.elf build/userland/mm_test.elf build/userland/malloc_test.elf
+
+# libc runtime objects (freestanding userland helpers); linked into the
+# tests that need them.  Compiled with the same UCFLAGS as the tests.
+LIBC_OBJ := build/userland/libc/mem.o build/userland/libc/malloc.o
 
 CSRC := $(shell find kernel -name '*.c')
 ASMSRC := $(shell find kernel -name '*.asm')
@@ -110,6 +114,17 @@ build/userland/mm_test.c.o: userland/mm_test.c
 
 build/userland/mm_test.elf: build/userland/mm_test.c.o build/userland/crt0.asm.o userland/user.ld
 	$(LD) $(ULDFLAGS) -T userland/user.ld build/userland/crt0.asm.o $< -o $@
+
+build/userland/malloc_test.c.o: userland/malloc_test.c
+	@mkdir -p $(dir $@)
+	$(CC) $(UCFLAGS) -c $< -o $@
+
+build/userland/malloc_test.elf: build/userland/malloc_test.c.o $(LIBC_OBJ) build/userland/crt0.asm.o userland/user.ld
+	$(LD) $(ULDFLAGS) -T userland/user.ld build/userland/crt0.asm.o $(LIBC_OBJ) $< -o $@
+
+$(LIBC_OBJ): build/userland/libc/%.o: userland/libc/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(UCFLAGS) -c $< -o $@
 
 # incbin reads the linked user ELFs, so they must exist before nasm runs.
 build/kernel/elf/elf_blobs.asm.o: $(UELF)

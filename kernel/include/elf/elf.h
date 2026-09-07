@@ -159,5 +159,6 @@ extern const uint8_t elf_srv_test_start[], elf_srv_test_end[];
 extern const uint8_t elf_lifecycle_test_start[], elf_lifecycle_test_end[];
 extern const uint8_t elf_vfs_test_start[], elf_vfs_test_end[];
 extern const uint8_t elf_mm_test_start[], elf_mm_test_end[];
+extern const uint8_t elf_malloc_test_start[], elf_malloc_test_end[];
 
 #endif /* VOID_ELF_H */
