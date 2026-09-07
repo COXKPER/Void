@@ -41,8 +41,36 @@ int um_brk_set(process_t *p, uint64_t new_brk);
 
 /* ── anonymous mmap region ────────────────────────────────────────────── */
 
-/* Page-aligned floor for the growing-down anonymous region: the first page
- * below the user stack's 64 KiB. */
-uint64_t um_mmap_floor(void);
+/* END (exclusive) of the growing-down anonymous region: the stack's bottom
+ * edge.  mmap maps with base+len <= USER_MMAP_TOP (the region grows down
+ * toward the heap) and refuses anything that would cross it — that would
+ * overlap the stack. */
+
+/* Top-down anonymous region metadata: one entry per mapped range, singly
+ * linked, addresses excluded (both ends exclusive).  A tiny sorted list is
+ * per the Phase 12 spec; it stays small because maps are few. */
+typedef struct vm_area {
+    uint64_t      start;          /* first byte (page-aligned)        */
+    uint64_t      end;            /* one past last byte (page-aligned)*/
+    uint64_t      prot;           /* VMM_* intent (WRITE/NX)          */
+    uint64_t      flags;          /* VMM_* (PRESENT|USER implied)     */
+    uint32_t      kind;           /* VM_AREA_STACK / _HEAP / _ANON    */
+    struct vm_area *next;
+} vm_area_t;
+
+enum { VM_AREA_STACK = 1, VM_AREA_HEAP, VM_AREA_ANON };
+
+/* Validate that [start,end) overlaps no *allocated* user page — the stack
+ * footprint, the heap span [heap_start,brk_current), any PT_LOAD pages.  No
+ * vm_area list is consulted because the ELF loader records pages rather
+ * than regions; the page tables are the source of truth. */
+bool um_range_clear(process_t *p, uint64_t start, uint64_t end);
+
+/* Reserve a page-aligned anonymous mapping of `length` bytes starting at the
+ * first unmapped run of that size just below the stack (growing down),
+ * returning the reserved base via *out.  Returns 0 on success, -VE_NOMEM
+ * when no contiguous clear range exists (including colliding with the stack
+ * or the heap). */
+int um_mmap_reserve(process_t *p, uint64_t length, uint64_t *out);
 
 #endif /* VOID_USER_MEM_H */

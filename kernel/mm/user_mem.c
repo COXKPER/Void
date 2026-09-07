@@ -73,6 +73,57 @@ int um_brk_set(process_t *p, uint64_t new_brk) {
 }
 
 /* ── anonymous mmap region ────────────────────────────────────────────── */
-uint64_t um_mmap_floor(void) {
-    return (USER_STACK_TOP - USER_STACK_SIZE);
+/* ── anonymous mmap region ────────────────────────────────────────────── */
+
+/* True when no *allocated* user page lies in [start,end).  The page tables
+ * are the source of truth — the ELF loader records pages, not regions, so a
+ * plain PRESENT walk answers "is this range free" with no separate list to
+ * keep in sync.  This is what makes overlap detection and the top-down
+ * carve trivial. */
+bool um_range_clear(process_t *p, uint64_t start, uint64_t end) {
+    if (!p || !p->cr3) return false;
+    if (start >= end) return true;
+    for (uint64_t va = start & PAGE_MASK; va < end; va += PAGE_SIZE)
+        if (vmm_get_pte((uint64_t *)p->cr3, va) & VMM_PRESENT) return false;
+    return true;
+}
+
+/* Reserve a growing-down anonymous mapping.  length is page-aligned (sys_mmap
+ * guarantees it).  Starts with the mapping ending exactly at USER_MMAP_TOP
+ * (the stack's bottom edge) and walks downward; whenever a candidate window
+ * touches an allocated page, the search jumps below that page.  It never
+ * searches above the heap break, so the mmap floor can't swallow the stack
+ * and the region can't reach the heap.  Returns the reserved base (page
+ * aligned) through *out. */
+int um_mmap_reserve(process_t *p, uint64_t length, uint64_t *out) {
+    if (!p || !p->cr3 || !out || length == 0) return -VE_INVAL;
+    if ((length & (PAGE_SIZE - 1)) != 0) return -VE_INVAL;
+
+    uint64_t n     = length / PAGE_SIZE;
+    uint64_t floor = (p->brk_current + PAGE_SIZE - 1) & PAGE_MASK;
+    if (floor < USER_CODE_BASE) floor = USER_CODE_BASE;
+
+    /* Length that already spans everything can never fit below the stack. */
+    if (n * PAGE_SIZE > USER_MMAP_TOP) return -VE_NOMEM;
+    if (USER_MMAP_TOP - n * PAGE_SIZE < floor) return -VE_NOMEM;
+
+    /* First candidate: mapping ends exactly at the stack floor. */
+    uint64_t base = (USER_MMAP_TOP - n * PAGE_SIZE) & PAGE_MASK;
+
+    for (;;) {
+        if (um_range_clear(p, base, base + n * PAGE_SIZE)) {
+            *out = base;
+            return 0;
+        }
+        /* Occupied — find the highest allocated page in the window and
+         * jump below it.  The new top sits just above that page, so every
+         * iteration lowers base strictly (occ >= base) and the floor check
+         * turns exhaustion into -VE_NOMEM. */
+        uint64_t occ = base;
+        for (uint64_t va = base; va < base + n * PAGE_SIZE; va += PAGE_SIZE)
+            if (vmm_get_pte((uint64_t *)p->cr3, va) & VMM_PRESENT) occ = va;
+
+        base = (occ - n * PAGE_SIZE) & PAGE_MASK;
+        if (base < floor) return -VE_NOMEM;
+    }
 }
