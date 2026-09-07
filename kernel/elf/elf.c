@@ -475,7 +475,7 @@ elf_status_t elf_load_interp(const elf_loader_t *ctx, process_t *p,
     for (const char *c = ctx->interp; *c; c++)
         if (*c == '/') base = c + 1;
 
-    elf_blob_t blob;
+    elf_blob_t blob = { 0, 0 };
     elf_status_t es = elf_find_embedded(base, &blob);
     if (es != ELF_OK) return es;
 

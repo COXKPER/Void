@@ -78,16 +78,23 @@ kernel/
 │   └── syscall.c      # MSR setup, user-pointer validation, syscall dispatcher
 ├── vfs/
 │   └── voidfs.c       # Kernel VFS: embedded readonly tree + fd-layer syscalls
+├── acpi/
+│   └── acpi.c         # Phase 14 Track B: RSDP→RSDT/XSDT walk + table list (Lux tables.c port)
+├── dev/
+│   └── tty.c          # Phase 14 Track A: FD_TTY kernel line discipline (echo/backspace/EOF/ioctl)
 ├── main.c             # kernel_main(): orchestrates init sequence
 └── linker.ld          # Higher-half linker script (KERNEL_VBASE=0xFFFFFFFF80000000)
 
 userland/
 ├── include/
-│   └── void.h              # libvoid syscall wrappers (write/read/open/close/lseek/cwd/fork/…)
+│   ├── void.h              # libvoid syscall wrappers (write/read/open/close/lseek/cwd/fork/…)
+│   └── libc/               # Phase 13 runtime: string/mem primitives + malloc
+├── libc/
+│   ├── mem.c               # memcpy/memmove/memset/strlen/strcmp/… (byte loops, -mno-sse)
+│   └── malloc.c            # boundary-tag allocator on brk(12)/mmap(9) ABI
 ├── crt0.S                  # Minimal entry point: stack alignment + main() + exit
 ├── init/
-│   ├── main.c              # First init process: calls getpid/write/sched_yield/exit
-│   └── (no services yet)
+│   └── main.c              # First init process: calls getpid/write/sched_yield/exit
 ├── init.ld                 # Linker script for init.elf (0x400000 base, page-aligned PT_LOAD)
 ├── user.ld                 # Linker script for Phase 4 test ELF (elf_test.elf)
 ├── user_packed.ld          # Linker script for .text+.rodata in same page (tests permission union)
@@ -96,11 +103,20 @@ userland/
 ├── forkexec_test.c         # Phase 8 fork/exec/lifecycle test (checks=0xFF)
 ├── vfs_test.c              # Phase 10 VFS test (20+ checks, [VFS] Done: 0 fail)
 ├── mm_test.c               # Phase 12 brk/sbrk/mmap/munmap + fork-heap test ([MM] Done: 0 fail)
+├── malloc_test.c           # Phase 13 allocator regression ([MALLOC] Done: 0 fail)
+├── tty_test.c              # Phase 14 Track A TTY test ([TTY] Done: 0 fail)
+├── dynamic_test.c          # Phase 14 Track C: -shared PIE → [DYNAMIC] Done: 0 fail
+├── ld.so/                  # Phase 14 Track C: the userland dynamic linker
+│   ├── rtld.c              # relocating linker: auxv→PT_DYNAMIC→relocs, returns AT_ENTRY
+│   ├── rtld.h              # ELF64 dyn ABI subset (4 reloc types, auxv types)
+│   ├── rtld_start.S        # entry stub: hands RSP to rtld_main, jmp *%rax to AT_ENTRY
+│   ├── rtld.ld             # static ET_EXEC at 0x400000 (loadable with no linker)
+│   └── interp.c            # .interp section: "/lib/ld-void.so" PT_INTERP marker
 └── services/               # Phase 9 user-space services + their clients
     ├── calc.c              # first service (named endpoint, request→reply over IPC)
     ├── srv_test.c          # client with svc_lookup
     └── lifecycle_test.c    # register → discover → exit → registry-clean → lookup-fails
-└── (no VFS, fork/execve, dynamic linking yet)
+└── (no user-space VFS service, fork/execve of arbitrary paths, or shared-library DSO loading yet)
 
 scripts/
 └── limine.cfg         # Limine boot config (kernel path, module definitions)
@@ -266,6 +282,12 @@ limine/                # Vendored Limine v9.6.7 (git submodule, DO NOT MODIFY)
 - ✅ `[MM]` regression (userland/mm_test.c, embedded + spawned at boot): 20+ deterministic checks — sbrk init/grow/shrink/below, brk set/query/stable, mmap base/zero/write/second/isoleak, munmap ok/again/never, EINVAL rejections, fork-heap inheritance + isolation (eager copy), wait4-poll reap. `[MM test] Done: 0 fail(s)` ×3. Full Phase 4–11 regression (IPC/VFS/forkexec/srv/lifecycle/init 42) green ×3, 0 panics/0 faults/0 unknown syscalls.
 - ⚠️ Remaining (NOT started): user-VFS "writable backend"; shared libraries / dynamic linking; a user-PF handler + COW (fork is still eager copy); signals. mmap is anonymous-only (no file-backed mapping yet; the VFS tree is readonly so file-backed would be dead code).
 
+**Phase 14 — Terminal, ACPI, and dynamic linking (COMPLETE, three-track milestone):**
+- ✅ Track A — TTY subsystem (`kernel/dev/tty.c`, `kernel/include/dev/tty.h`): fd 0/1/2 now route to `FD_TTY`, dispatched by `sys_read`/`sys_write` to a kernel line discipline — canonical input staging (`tty_line[256]`: printable+echo, DEL/backspace pops+erases, CR/LF completes a line, Ctrl-D flushes, Ctrl-C literal, 128-drain cap), `tty_read` = non-blocking poll of the staged line (no safe sleep/wakeup yet, so blocking reads stay deferred), `tty_ioctl` echo on/off via `SYS_ioctl=16`, `tty_write` splices to the `"serial"` device instance (`dev_write`) — register-level serial/console untouched. `tty_selftest()` (11 synthetic-byte checks) + `userland/tty_test.c` (7 checks) both green.
+- ✅ Track B — ACPI (`kernel/acpi/acpi.c`, `kernel/include/void/acpi.h`): RSDP→RSDT/XSDT table walk + find-by-signature + version detection, "no RSDP → cleanly disabled". Physical access goes through a byte-safe private kernel window (`ACPI_MAP_WIN`) because Limine's HHDM maps only memory-map entries — the low-ROM RSDP page #PF'd on a direct HHDM read. Lux `tables.c` (MIT) ported for table-list/shape (BRING), with checksum validation and bound-checked walks ADDED (Lux skips them). `[ACPI]` selftest green, no #PF/panic.
+- ✅ Track C — dynamic ELF linking (`kernel/elf/elf.c`, `userland/ld.so/`, `userland/dynamic_test.c`): ET_DYN/PIE at a deterministic base `ELF_DYN_BASE=0x40000000` (1 GiB, no ASLR), ET_EXEC unchanged, `elf_validate` accepts both, PT_INTERP/PT_DYNAMIC parsed. When a PIE has PT_INTERP, `elf_load_interp()` loads the embedded `ld-void.so` rtld (a statically-linked ET_EXEC at 0x400000) into the same address space — segments only, so the auxv already seeded for the *main* binary survives — and hands it the entry. The rtld relocates the main image in place (RELATIVE/GLOB_DAT/JUMP_SLOT/R_X86_64_64, the four types a single-image `-shared` PIE emits) against its own dynsym, then jumps to AT_ENTRY. Initial stack is a full System V frame: `[argc][argv][NULL][envp][NULL][auxv…][AT_NULL]` with AT_PHDR/PHENT/PHNUM/PAGESZ/BASE/ENTRY. libc (`mem`/`malloc`) builds both static (`-fno-pic`) and dynamic (`-fPIC`) twins; `dynamic_test` is a `-shared` PIE exercising all four reloc types + a libc call (strlen) needing dynamic resolution. `[DYNAMIC] Done: 0 fail` ×3.
+- ✅ **Full Phase 14 regression ×3 from clean build**: DEV (13/13 PASS since Phase 11) / TTY / ACPI / IPC / VFS / MM / MALLOC / forkexec `checks=0xFF` / srv / lifecycle / `[DYNAMIC] Done: 0 fail` / init status 42 — all green, **0 panics / 0 faults / 0 unknown syscalls** on every run. Logs byte-identical across the 3 runs (deterministic).
+
 ## Key Design Decisions
 
 1. **Single source of truth for boot info**: Only `boot.c` includes `<boot/limine.h>`. All other kernel code reads from the `g_boot` singleton defined in `<void/boot.h>`. This isolates the Limine protocol as an implementation detail.
@@ -312,3 +334,5 @@ limine/                # Vendored Limine v9.6.7 (git submodule, DO NOT MODIFY)
 - ℹ️ Also fixed a dormant boot bug found while wiring NX: `elf_init()` was never called, so NX was never enabled; user pages (heap/mmap) are now NX when the CPU supports it.
 
 22. **The userland allocator is a boundary-tag/arena design, deliberately chose two "boring" structures and one hard correctness bar** (`userland/libc/malloc.c`): the two pre-approved design decisions — **(a)** 16-byte-aligned boundary tags (each block carries a `btag_t{size,flags}` header *and*, when free, a mirrored footer; the PREV bit + footer make left-coalescing safe because a footer only exists before a free block) and **(b)** arena-via-init-latch (the first allocation latches `a_start`/`a_end` from a pure `sbrk(0)` read — never the kernel moving the break — and growth happens in page-aligned chunks by extending the top free block in place). Three follow-on decisions were forced by the surrounding kernel: **(c)** *mmap for large allocations* (`≥128 KiB`, tagged `B_MMAP`, released whole by `free()`) so a single big allocation can't fragment the shared brk arena — this is only sound because Void's `sys_mmap` is private-anonymous-only and `free()` branches on the tag; **(d)** *realloc grows by allocate→copy→free* (original preserved on allocation failure, the §16 hard requirement) with in-place grow deliberately deferred — "boring over clever"; and **(e)** *eager everything* — the allocator is plain process-local statics, so eager-copy fork (decision #13) and atomic-scratch exec (decision #14) need no locking or re-init, and a `malloc_selfcheck()` free-list walk gives the suite a deterministic invariant to assert between phases. **Why this shape**: the boundary-tag/free-list is the smallest structure that gives both first-fit reuse and coalescing with no extra metadata pass; the init-latch avoids a kernel breaking-API change and keeps `malloc` correct across brk-shrink; and, critically, style stayed boring — no size classes, no tcache, no per-thread arenas, no TLS. `malloc(0)`, `free(NULL)` and double-free are all deterministic and documented (§11 contract); the double-free is a loud exit, not UB. **Why not COW/tcache/etc.**: those all need threads, refcounting, or a user-PF handler Void doesn't have; a first-fit boundary-tag allocator is the correct, sufficient implementation for few short-lived processes today. All state is process-local, so fork (eager page copy) and exec (fresh .bss) reset it for free. **Known simplifications, marked `ponytail:` in the source**: no fast path/TLS, no in-place realloc growth — add when profiling calls for it.
+
+23. **Dynamic linking is kernel-runs-interp + userland-rtld, single-image by constraint, deterministic base by design** (`kernel/elf/elf.c` `elf_load_interp()`, `userland/ld.so/rtld.c`): Void's championed shape — the spec's preferred one — is that the *kernel* sees a `PT_INTERP` and hands control to a *userland* dynamic linker rather than relocating in-ring-0. So: the kernel's `elf_validate` now accepts `ET_DYN` alongside `ET_EXEC`, parses `PT_INTERP`/`PT_DYNAMIC`, loads the PIE at `ELF_DYN_BASE=0x40000000` (1 GiB — fixed, non-ASLR, above every test binary, far below the stack), seeds a **full System V initial stack** (`[argc][argv][NULL][envp][NULL][auxv pairs][AT_NULL]` with `AT_PHDR/PHENT/PHNUM/PAGESZ/BASE/ENTRY` — the same frame a real kernel hands a dynamic executable, so the rtld and any future libc consume the standard ABI), then runs the named interpreter: `elf_load_interp()` loads the embedded `ld-void.so` (a *statically linked ET_EXEC* at 0x400000 with its own entry — it must be loadable with no linker of its own) into the same address space via a segments-only helper that deliberately does **not** rebuild the stack, and jumps there. The rtld is a *relocating* linker, not a loader: it walks `AT_PHDR→PT_DYNAMIC`, applies every relocation in place against the image's own dynsym (RELATIVE, GLOB_DAT, JUMP_SLOT, and R_X86_64_64 — the four types the toolchain emits for a `-shared` "shared object that is the whole program"), reports `DT_NEEDED` but refuses imports it cannot resolve (loud exit, never a silent NULL), and returns `AT_ENTRY` to an asm stub that jumps with RSP restored to the kernel's exact frame. **Why single-image**: Void has no writable filesystem and no file-backed mmap, so a DSO has nothing to be *loaded from* — every dynamic symbol the program needs is linked into the same `-shared` image, and the four reloc types all name in-image symbols the single-object rtld can resolve. **Why `-shared` as the PIE recipe**: `ld -nostdlib -shared` + an explicit `.interp` section produces *both* `PT_INTERP` (the kernel's handover key) *and* the full reloc surface in one object — no boundary between program and DSO because there is only one object. **Why a deterministic base and not ASLR**: Void has no entropy source worth the name and a single boot path; a fixed 1 GiB base keeps PIE execution byte-identical to ET_EXEC while earning the PIE's reloc/`-fPIC` benefits. **Lux classification**: Lux has **no** dynamic linker and **no** ET_DYN loader — `kernel/elf/elf.c` is entirely Void-native (the `-shared` whole-program idea is the classic glibc `ld` pattern, not Lux). BRING — the System V initial-frame/auxv *layout* (the ABI any OS must seed); PORT — nothing (there is no Lux loader file to port); REFERENCE — real DSO-load + symbol scope across objects once file-backed mmap and a writable FS exist (`ponytail:` in `rtld.c` marks it); SKIP — lazy binding/`_dl_runtime_resolve`, TLS, IRELATIVE — none exist in Void's toolchain emission today.
