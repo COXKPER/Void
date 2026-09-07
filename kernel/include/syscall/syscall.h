@@ -34,6 +34,9 @@ typedef struct process process_t;
 #define SYS_open                 2    /* Linux x86_64 open(2)           */
 #define SYS_close                3
 #define SYS_lseek                8
+#define SYS_mmap                 9    /* Linux x86_64 mmap(2)           */
+#define SYS_munmap              11    /* Linux x86_64 munmap(2)         */
+#define SYS_brk                 12    /* Linux x86_64 brk(2)            */
 #define SYS_sched_yield          24
 #define SYS_getpid               39
 #define SYS_exit                 60
@@ -105,5 +108,13 @@ int32_t sys_ipc_connect(int32_t target_pid, uint32_t serv_endpoint_id);
 int32_t sys_sr_register(const char *name, int32_t handle);
 int32_t sys_sr_unregister(const char *name, int32_t handle);
 int32_t sys_sr_lookup(const char *name);
+
+/* ── Memory syscall handlers (Phase 12) ───────────────────────────── */
+/* brk/sbrk.  `addr` is the new break.  addr == 0 queries the current
+ * break (sbrk(0)); anything below p->heap_start returns the current
+ * break unchanged (POSIX brk()); successful grow/shrink returns the new
+ * break.  Returns positive break addresses on success, -errno on
+ * failure. */
+int64_t sys_brk(struct process *p, uint64_t addr);
 
 #endif /* VOID_SYSCALL_H */

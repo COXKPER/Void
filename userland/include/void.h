@@ -18,6 +18,9 @@
 #define SYS_open        2
 #define SYS_close       3
 #define SYS_lseek       8
+#define SYS_mmap        9
+#define SYS_munmap      11
+#define SYS_brk         12
 #define SYS_sched_yield 24
 #define SYS_getpid      39
 #define SYS_execve      59
@@ -123,6 +126,31 @@ static inline long sys_getcwd(char *buf, size_t size) {
 
 static inline long sys_chdir(const char *path) {
     return syscall1(SYS_chdir, (long)path);
+}
+
+/* brk: set the break to `addr` and return the new break (or the current one
+ * on query/no-op), positive, or -errno.  sys_brk returns the NEW break, not
+ * the old one, so sbrk() keeps its own break cache in userspace. */
+static inline long sys_brk(void *addr) {
+    return syscall1(SYS_brk, (long)addr);
+}
+
+/* sbrk: increment the break by `inc` (negatives allowed) and return the OLD
+ * break — the classic sbrk contract.  Built on sys_brk(12) using a userspace
+ * break cache initialised on first call via sbrk(0).  Returns (void*)-1 on
+ * error.  */
+static inline void *sys_sbrk(long inc) {
+    static long brk_cache;          /* process-global userspace break (BSS) */
+    if (!brk_cache) {
+        long zero = sys_brk(0);
+        if (zero <= 0) return (void *)-1;
+        brk_cache = zero;
+    }
+    long old = brk_cache;
+    long nb  = old + inc;           /* overflow checked by the kernel below */
+    if (nb < 0 || sys_brk((void *)nb) != nb) return (void *)-1;
+    brk_cache = nb;
+    return (void *)old;
 }
 
 static inline long sys_readdir(int fd, char *name) {

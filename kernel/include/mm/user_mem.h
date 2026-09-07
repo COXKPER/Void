@@ -29,7 +29,8 @@
 
 /* ── user heap (brk) ──────────────────────────────────────────────────── */
 
-/* True when `addr` lies inside [heap_start, brk_current). */
+/* True when `addr` lies inside [heap_start, brk_current), i.e. the kernel
+ * may dereference it without a user-pointer walk. */
 bool um_brk_contains(process_t *p, uint64_t addr);
 
 /* Extend the heap so it spans [heap_start, new_brk), allocating zeroed user

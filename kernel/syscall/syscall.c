@@ -18,6 +18,32 @@
 #include <void/voidfs.h>
 #include <ipc/ipc.h>
 #include <svc/svc.h>
+#include <mm/user_mem.h>
+
+/* ── sys_brk ─────────────────────────────────────────────────────────────
+ * brk(2)/sbrk(2) merged into one syscall, Linux brk semantics: the kernel
+ * tracks brk_current and moves it on demand; sbrk(n) is a userspace wrapper
+ * that queries then moves.
+ *
+ *   addr == 0                     → return brk_current (sbrk(0))
+ *   addr < heap_start             → return brk_current unchanged
+ *   addr in [brk_current, heap]   → grow/shrink, return the NEW break
+ *   grow runs out of frames       → return -ENOMEM, break unchanged
+ *
+ * Shrink is best-effort (release pages where safe); Linux makes brk shrink
+ * infallible too (ENOMEM is only possible on grow).  Old break is never
+ * returned by the kernel — the sbrk(±n) arithmetic lives in libvoid where
+ * the userspace break cache (a process global) can hold it.
+ */
+int64_t sys_brk(process_t *p, uint64_t addr) {
+    if (!p || !p->heap_start) return -VE_INVAL;
+    if (addr == 0) return (int64_t)p->brk_current;        /* sbrk(0) */
+    if (addr < p->heap_start)  return (int64_t)p->brk_current; /* no-op */
+
+    int r = um_brk_set(p, addr);
+    if (r) return (int64_t)r;
+    return (int64_t)p->brk_current;
+}
 
 /* ── MSRs ────────────────────────────────────────────────────────────── */
 #define IA32_EFER   0xC0000080
@@ -216,6 +242,10 @@ isr_frame_t *syscall_dispatch(isr_frame_t *frame) {
     case SYS_write:
         frame->rax = (uint64_t)sys_write(p, (int32_t)frame->rdi,
                                         frame->rsi, frame->rdx);
+        return frame;
+
+    case SYS_brk:
+        frame->rax = (uint64_t)sys_brk(p, frame->rdi);
         return frame;
 
     case SYS_getpid:
