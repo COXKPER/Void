@@ -96,6 +96,10 @@ process_t *process_alloc(pid_t_v parent) {
         p->exited      = false;
         p->thread      = NULL;
         p->umap_count  = 0;
+        p->heap_start  = 0;   /* reset so a stale break can't leak across a
+                               * slot reuse; brk_init() sets real values */
+        p->brk_current = 0;
+        p->brk_perm    = 0;
 
         /* fd 0/1/2 → console, mirroring stdin/stdout/stderr. */
         for (int f = 0; f < MAX_FDS; f++) {
@@ -438,6 +442,14 @@ isr_frame_t *process_fork_current(isr_frame_t *frame) {
         }
     }
 
+    /* ── heap identity: the child inherits the parent's break.  The eager
+     * copy above already duplicated every heap page; this hands the child
+     * the same heap_start/brk_current/brk_perm so its later brk()/sbrk()
+     * arithmetic lines up with the copied pages. */
+    c->heap_start  = p->heap_start;
+    c->brk_current = p->brk_current;
+    c->brk_perm    = p->brk_perm;
+
     /* ── IPC handle table: child inherits a *copy* of the entries.  Each
      * entry points at an endpoint owned by a specific pid (probably the
      * parent), so the child sharing the target is fine; when either process
@@ -573,6 +585,9 @@ isr_frame_t *process_execve_current(isr_frame_t *frame, uint64_t upath) {
         return frame;
     }
 
+    /* New image gets a fresh heap break just past its highest byte. */
+    brk_init(&scratch, elf_load_end(&ctx));
+
     /* ── atomically swap the address space ───────────────────────────── */
     /* Tear down the old user half; the new one slides in underneath the
      * running thread.  The kernel upper half is shared by reference, so only
@@ -580,11 +595,16 @@ isr_frame_t *process_execve_current(isr_frame_t *frame, uint64_t upath) {
     process_destroy_user_space(p);
 
     /* Install the new space.  umap[] is copied from scratch so future teardown
-     * (exit, a second exec) frees the new pages. */
+     * (exit, a second exec) frees the new pages.  The heap break resets too —
+     * exec wipes the old heap; brk(0) in the new image reports the fresh
+     * break, and old anon mappings are gone with the old space. */
     p->cr3 = new_cr3;
     p->umap_count = scratch.umap_count;
     for (uint32_t i = 0; i < scratch.umap_count; i++)
         p->umap[i] = scratch.umap[i];
+    p->heap_start = scratch.heap_start;
+    p->brk_current = scratch.brk_current;
+    p->brk_perm   = scratch.brk_perm;
     p->thread->cr3 = new_cr3;   /* scheduler switches to this CR3 next tick */
 
     /* Load the new page tables NOW.  Just updating thread->cr3 is not enough:
