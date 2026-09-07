@@ -13,6 +13,7 @@ extern struct limine_hhdm_request         limine_hhdm_request;
 extern struct limine_framebuffer_request  limine_framebuffer_request;
 extern struct limine_memmap_request       limine_memmap_request;
 extern struct limine_module_request       limine_module_request;
+extern struct limine_rsdp_request         limine_rsdp_request;
 
 /* ── global boot context ──────────────────────────────────────────────── */
 boot_info_t g_boot = {0};
@@ -96,6 +97,18 @@ void boot_init(void) {
     }
     g_boot.mmap      = mmap_buf;
     g_boot.mmap_count = count;
+
+    /* ── ACPI RSDP ────────────────────────────────────────────────────
+     * Limine scans the RDSP per the boot protocol; no physical EBDA scan.
+     * 0 means the platform is not ACPI-compliant (acpi_init is optional). */
+    struct limine_rsdp_response *rsdp = limine_rsdp_request.response;
+    if (rsdp && rsdp->address) {
+        g_boot.acpi_rsdp = (uint64_t)(uintptr_t)rsdp->address;
+        kprintf("[boot] ACPI RSDP @ 0x%016x\n\r", rsdp->address);
+    } else {
+        g_boot.acpi_rsdp = 0;
+        kprintf("[boot] No ACPI RSDP (platform not ACPI-compliant)\n\r");
+    }
 
     /* ── Modules ──────────────────────────────────────────────────── */
     struct limine_module_response *mod = limine_module_request.response;

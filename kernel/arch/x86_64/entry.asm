@@ -81,6 +81,17 @@ limine_module_request:
     dq 0                                           ; internal_module_count
     dq 0                                           ; internal_modules
 
+; ── RSDP (ACPI tables) ──────────────────────────────────────────────────
+; ID: LIMINE_RSDP_REQUEST = { common magic, 0xc5e77b6b397e7b43, 0x27637845accdcf3c }
+; struct: id[4] + revision + response
+align 8
+global limine_rsdp_request
+limine_rsdp_request:
+    dq 0xc7b1dd30df4c8b88, 0x0a82e883a194f07b
+    dq 0xc5e77b6b397e7b43, 0x27637845accdcf3c
+    dq 0                                           ; revision = 0
+    dq 0                                           ; response
+
 section .limine_requests_end
     dq 0xadc0e0531bb10d03, 0x9572709f31764c62
 

@@ -57,6 +57,10 @@ typedef struct {
     boot_module_t *modules;
     uint64_t       module_count;
 
+    /* ACPI RSDP physical address, or 0 if the platform is not ACPI-compliant
+     * (Limine fills this from the RSDP tag — no physical EBDA scan). */
+    uint64_t acpi_rsdp;
+
     /* total usable physical memory (bytes, rounded to page boundary) */
     uint64_t total_usable_memory;
 } boot_info_t;

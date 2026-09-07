@@ -14,6 +14,7 @@
 #include <syscall/syscall.h>
 #include <void/voidfs.h>
 #include <void/device.h>
+#include <void/acpi.h>
 #include <dev/serial_drv.h>
 #include <dev/tty.h>
 #include <elf/elf.h>
@@ -161,6 +162,9 @@ void NO_RETURN kernel_main(void) {
     vmm_init();
     kheap_init();
     elf_init();   /* enables NX so user pages (heap/mmap/ELF) can be NX */
+
+    acpi_init();  /* optional: no RSDP → reports and disables cleanly */
+    acpi_selftest();
 
     voidfs_init();
     dev_init();
