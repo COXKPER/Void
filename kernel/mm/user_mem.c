@@ -22,6 +22,21 @@ static void umap_remove(process_t *p, uint32_t i) {
     p->umap_count--;
 }
 
+/* Unmap and free every allocated user page at/above `start`, always staying
+ * below the user stack floor (USER_MMAP_TOP) so no process can unmap its
+ * own stack.  Shared by brk shrink and munmap. */
+void um_release_from(process_t *p, uint64_t start) {
+    for (uint32_t i = 0; i < p->umap_count; ) {
+        if (p->umap[i].virt >= start && p->umap[i].virt < USER_MMAP_TOP) {
+            vmm_unmap_page((uint64_t *)p->cr3, p->umap[i].virt);
+            pmm_free_frame(p->umap[i].phys);
+            umap_remove(p, i);
+        } else {
+            i++;
+        }
+    }
+}
+
 /* ── user heap (brk) ─────────────────────────────────────────────────── */
 
 bool um_brk_contains(process_t *p, uint64_t addr) {
@@ -58,15 +73,7 @@ int um_brk_set(process_t *p, uint64_t new_brk) {
          * break.  start == ceil(new_brk); the partial page holding new_brk
          * (its start is below start) stays mapped, exactly like Linux. */
         uint64_t start = (new_brk + PAGE_SIZE - 1) & PAGE_MASK;
-        for (uint32_t i = 0; i < p->umap_count; ) {
-            if (p->umap[i].virt >= start && p->umap[i].virt < USER_MMAP_TOP) {
-                vmm_unmap_page((uint64_t *)p->cr3, p->umap[i].virt);
-                pmm_free_frame(p->umap[i].phys);
-                umap_remove(p, i);
-            } else {
-                i++;
-            }
-        }
+        um_release_from(p, start);
         p->brk_current = new_brk;
     }
     return 0;

@@ -36,6 +36,16 @@
 #define O_WRONLY 1
 #define O_RDWR   2
 
+/* ── mmap(2) prot/flags (Linux x86_64 values) ───────────────────────── */
+#define PROT_NONE  0
+#define PROT_READ  1
+#define PROT_WRITE 2
+#define PROT_EXEC  4
+
+#define MAP_PRIVATE   0x02
+#define MAP_ANONYMOUS 0x20    /* == MAP_ANON */
+#define MAP_FAILED    ((void *)-1)
+
 /* ── syscall wrappers ───────────────────────────────────────────────── */
 
 /* long syscall0(long num) */
@@ -74,6 +84,22 @@ static inline long syscall3(long num, long arg0, long arg1, long arg2) {
     __asm__ volatile ("syscall"
                      : "=a"(ret)
                      : "a"(num), "D"(arg0), "S"(arg1), "d"(arg2)
+                     : "rcx", "r11", "memory");
+    return ret;
+}
+
+/* long syscall6(long num, long a0..a5) — R10 carries arg3 (SYSCALL
+ * clobbers RCX, exactly as with the IPC wrappers), R8/R9 args 4/5. */
+static inline long syscall6(long num, long a0, long a1, long a2,
+                            long a3, long a4, long a5) {
+    long ret;
+    register long r10 __asm__("r10") = a3;
+    register long r8  __asm__("r8")  = a4;
+    register long r9  __asm__("r9")  = a5;
+    __asm__ volatile ("syscall"
+                     : "=a"(ret)
+                     : "a"(num), "D"(a0), "S"(a1), "d"(a2),
+                       "r"(r10), "r"(r8), "r"(r9)
                      : "rcx", "r11", "memory");
     return ret;
 }
@@ -126,6 +152,20 @@ static inline long sys_getcwd(char *buf, size_t size) {
 
 static inline long sys_chdir(const char *path) {
     return syscall1(SYS_chdir, (long)path);
+}
+
+/* mmap(2): length bytes of anonymous private memory.  addr==0 picks an
+ * address (top-down, below the stack); addr!=0 maps fixed.  Returns the
+ * mapping or MAP_FAILED (-1).  */
+static inline void *sys_mmap(void *addr, size_t length, int prot, int flags,
+                             int fd, long offset) {
+    long ret = syscall6(SYS_mmap, (long)addr, (long)length, prot, flags,
+                        fd, offset);
+    return (ret == -1) ? MAP_FAILED : (void *)ret;
+}
+
+static inline long sys_munmap(void *addr, size_t length) {
+    return syscall2(SYS_munmap, (long)addr, (long)length);
 }
 
 /* brk: set the break to `addr` and return the new break (or the current one

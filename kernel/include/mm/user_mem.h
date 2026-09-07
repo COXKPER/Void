@@ -73,4 +73,9 @@ bool um_range_clear(process_t *p, uint64_t start, uint64_t end);
  * or the heap). */
 int um_mmap_reserve(process_t *p, uint64_t length, uint64_t *out);
 
+/* Unmap and free every allocated user page at/above `start` (used by
+ * munmap and brk shrink).  Only pages wholly within the caller-owned
+ * lower half are released; the user stack is never touched. */
+void um_release_from(process_t *p, uint64_t start);
+
 #endif /* VOID_USER_MEM_H */

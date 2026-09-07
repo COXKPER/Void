@@ -19,6 +19,10 @@
 #include <ipc/ipc.h>
 #include <svc/svc.h>
 #include <mm/user_mem.h>
+#include <mm/pmm.h>          /* PAGE_SIZE */
+#include <elf/elf.h>         /* elf_nx_enabled() */
+
+#define PAGE_MASK  (~(PAGE_SIZE - 1))
 
 /* ── sys_brk ─────────────────────────────────────────────────────────────
  * brk(2)/sbrk(2) merged into one syscall, Linux brk semantics: the kernel
@@ -43,6 +47,100 @@ int64_t sys_brk(process_t *p, uint64_t addr) {
     int r = um_brk_set(p, addr);
     if (r) return (int64_t)r;
     return (int64_t)p->brk_current;
+}
+
+/* Flag / prot constants (Linux x86_64 values, mirrored in userland/void.h).
+ * The kernel accepts only the anonymous/private subset and rejects anything
+ * else loudly rather than silently mis-map. */
+#define PROT_NONE  0
+#define PROT_READ  1
+#define PROT_WRITE 2
+#define PROT_EXEC  4
+#define MAP_PRIVATE   0x02
+#define MAP_ANONYMOUS 0x20
+
+/* ── mmap prot → VMM flags ──────────────────────────────────────────────
+ * PROT_READ alone maps a readable (no-write) page.  x86 paging cannot
+ * express read-disabled pages, so PROT_NONE still maps the page readable;
+ * mmap refuses PROT_NONE rather than pretend.  PROT_EXEC adds nothing to
+ * the PTE (the loader only ever clears NX; x86 has no exec-disable missing
+ * here), and when the CPU has no NX, PROT_NONE<->EXEC distinctions collapse.
+ */
+static uint64_t mmap_prot_flags(int prot) {
+    uint64_t f = 0;
+    if (prot & PROT_WRITE)  f |= VMM_WRITE;
+    if (!(prot & PROT_EXEC) && elf_nx_enabled()) f |= VMM_NX;
+    return f;
+}
+
+/* ── sys_mmap ───────────────────────────────────────────────────────────
+ * Anonymous MAP_PRIVATE mapping of `length` bytes.
+ *
+ *   addr == 0    → reserve top-down below the stack (um_mmap_reserve)
+ *   addr != 0    → fixed map; must be page-aligned and land on free pages
+ *
+ * Pages are allocated eagerly: Void has no on-demand user page-fault
+ * handler (a user #PF kills the process), so every mapped page must be
+ * present from the start.  PROT_NONE is rejected (x86 can't express it),
+ * as are file/offset forms and any flag outside MAP_PRIVATE|ANONYMOUS.
+ */
+long sys_mmap(process_t *p, uint64_t addr, uint64_t length, int prot,
+              int flags, int fd, uint64_t offset) {
+    if (!p || !p->cr3) return -VE_PERM;
+
+    /* ── argument checks ───────────────────────────────────────────── */
+    if (length == 0) return -VE_INVAL;
+    if (length >= USER_MMAP_TOP) return -VE_NOMEM;     /* absurd size   */
+    if (fd != -1 || offset != 0) return -VE_INVAL;     /* anon only      */
+    if (flags != (MAP_PRIVATE | MAP_ANONYMOUS))
+        return -VE_INVAL;                              /* exactly anon+private */
+    if (prot == PROT_NONE) return -VE_INVAL;           /* no EXEC nuance */
+
+    uint64_t n = (length + PAGE_SIZE - 1) & PAGE_MASK; /* page align    */
+
+    /* ── choose base ──────────────────────────────────────────────── */
+    uint64_t base;
+    if (addr == 0) {
+        int r = um_mmap_reserve(p, n, &base);
+        if (r) return r;
+    } else {
+        if ((addr & (PAGE_SIZE - 1)) != 0) return -VE_INVAL;  /* aligned */
+        if (addr >= USER_MMAP_TOP)         return -VE_INVAL;  /* stack   */
+        if (addr + n < addr)               return -VE_NOMEM;  /* wrap    */
+        if (!um_range_clear(p, addr, addr + n)) return -VE_INVAL; /* overlap */
+        base = addr;
+    }
+
+    /* ── eager page allocation ─────────────────────────────────────── */
+    uint64_t f = mmap_prot_flags(prot);
+    for (uint64_t va = base; va < base + n; va += PAGE_SIZE)
+        if (process_alloc_user_page(p, va, f) != VOID_OK) {
+            /* Partial mapping: release what we mapped and fail. */
+            for (uint64_t v = base; v < va; v += PAGE_SIZE)
+                vmm_unmap_page((uint64_t *)p->cr3, v);
+            return -VE_NOMEM;
+        }
+    return (long)base;
+}
+
+/* ── sys_munmap ─────────────────────────────────────────────────────────
+ * Release a page-aligned [addr, addr+length) range.  Every page inside the
+ * caller-owned user half at/above US_CODE_BASE is unmapped and its frame
+ * freed; the range may span partly-mapped spans (page walk finds them).  A
+ * range is refused only when it would touch the user stack — which no
+ * process may unmap.  Linux keeps the code/data image mapped; an exec'd
+ * new image re-maps it rather than munmap'ing.
+ */
+long sys_munmap(process_t *p, uint64_t addr, uint64_t length) {
+    if (!p || !p->cr3) return -VE_PERM;
+    if (length == 0) return -VE_INVAL;
+    if ((addr & (PAGE_SIZE - 1)) != 0) return -VE_INVAL;
+
+    uint64_t n = (length + PAGE_SIZE - 1) & PAGE_MASK;
+    if (addr + n < addr || addr + n > USER_MMAP_TOP) return -VE_INVAL; /* stack */
+
+    um_release_from(p, addr);
+    return 0;
 }
 
 /* ── MSRs ────────────────────────────────────────────────────────────── */
@@ -246,6 +344,18 @@ isr_frame_t *syscall_dispatch(isr_frame_t *frame) {
 
     case SYS_brk:
         frame->rax = (uint64_t)sys_brk(p, frame->rdi);
+        return frame;
+
+    case SYS_mmap:
+        /* args: addr(RDI) length(RSI) prot(RDX) flags(R10) fd(R8) offset(R9).
+         * SYSCALL clobbers RCX, so arg3 rides in R10 exactly like IPC. */
+        frame->rax = (uint64_t)sys_mmap(p, frame->rdi, frame->rsi,
+                                        (int)frame->rdx, (int)frame->r10,
+                                        (int)frame->r8, frame->r9);
+        return frame;
+
+    case SYS_munmap:
+        frame->rax = (uint64_t)sys_munmap(p, frame->rdi, frame->rsi);
         return frame;
 
     case SYS_getpid:

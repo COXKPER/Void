@@ -117,4 +117,12 @@ int32_t sys_sr_lookup(const char *name);
  * failure. */
 int64_t sys_brk(struct process *p, uint64_t addr);
 
+/* mmap/munmap (Phase 12).  mmap: anonymous private mapping only today —
+ * addr==0 picks an address, fd/offset must be -1/0 (rejected otherwise).
+ * Returns the mapped address (page-aligned), or -errno.  munmap: releases
+ * a page-aligned [addr, addr+length) range. */
+long sys_mmap(struct process *p, uint64_t addr, uint64_t length, int prot,
+              int flags, int fd, uint64_t offset);
+long sys_munmap(struct process *p, uint64_t addr, uint64_t length);
+
 #endif /* VOID_SYSCALL_H */
