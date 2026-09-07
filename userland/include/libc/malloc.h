@@ -45,6 +45,12 @@ void *realloc(void *ptr, size_t size);
  * Double-free is a deterministic abort, not undefined behavior. */
 void free(void *ptr);
 
+/* Debug self-check: walk the free list against the boundary tags and the
+ * arena bounds; returns 0 when the allocator is structurally consistent,
+ * else a negative diagnostic code.  The regression suite calls it between
+ * phases; it is intentionally cheap to run. */
+int malloc_selfcheck(void);
+
 #ifdef __cplusplus
 }
 #endif
