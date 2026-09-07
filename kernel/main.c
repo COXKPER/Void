@@ -160,6 +160,10 @@ void NO_RETURN kernel_main(void) {
     dev_init();
     serial_drv_register();
 
+    /* Phase 11 device registry regression: deterministic [DEV] checks,
+     * no interrupts, runs before the scheduler exists. */
+    dev_self_test();
+
     idt_register_irq(0, timer_handler);
     lapic_init(100);
 

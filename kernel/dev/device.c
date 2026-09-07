@@ -246,8 +246,12 @@ void dev_self_test(void) {
     t_result("register device", dev_register(&t_char) == VOID_OK);
     t_result("register device", dev_register(&t_blk) == VOID_OK);
 
-    /* 2. lookup by name */
-    t_result("lookup device", dev_lookup("devc") == &t_char);
+    /* 2. lookup by name — the registry stores copies of driver structs, so
+     * we assert the returned entry names the right device, not pointers. */
+    {
+        void_device_t *found = dev_lookup("devc");
+        t_result("lookup device", found && found->name == t_char_name);
+    }
 
     /* 3. open → non-NULL instance */
     void *o = dev_open("devc");
