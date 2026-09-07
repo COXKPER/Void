@@ -38,6 +38,7 @@ extern const uint8_t elf_calc_start[], elf_calc_end[];
 extern const uint8_t elf_srv_test_start[], elf_srv_test_end[];
 extern const uint8_t elf_lifecycle_test_start[], elf_lifecycle_test_end[];
 extern const uint8_t elf_vfs_test_start[], elf_vfs_test_end[];
+extern const uint8_t elf_mm_test_start[], elf_mm_test_end[];
 
 /* ELF self-check (kernel/elf/elf_selftest.c) */
 uint32_t elf_selftest(const void *image, uint64_t size);
@@ -244,6 +245,17 @@ void NO_RETURN kernel_main(void) {
         kprintf("[init] VFS test pid %u running.\n\r", (uint64_t)vfs_test_pid);
     } else {
         kprintf("[init] ERROR: VFS test spawn failed (%d)\n\r", (int)vfs_test_pid);
+    }
+
+    /* Phase 12 mm test: brk/sbrk/mmap/munmap + fork-heap isolation. */
+    kprintf("[init] Spawning mm test...\n\r");
+    pid_t_v mm_test_pid = process_spawn_elf(elf_mm_test_start,
+                                            (uint64_t)(elf_mm_test_end - elf_mm_test_start),
+                                            0);
+    if (mm_test_pid > 0) {
+        kprintf("[init] mm test pid %u running.\n\r", (uint64_t)mm_test_pid);
+    } else {
+        kprintf("[init] ERROR: mm test spawn failed (%d)\n\r", (int)mm_test_pid);
     }
 
     sched_start();

@@ -176,18 +176,23 @@ static inline long sys_brk(void *addr) {
 }
 
 /* sbrk: increment the break by `inc` (negatives allowed) and return the OLD
- * break — the classic sbrk contract.  Built on sys_brk(12) using a userspace
- * break cache initialised on first call via sbrk(0).  Returns (void*)-1 on
- * error.  */
+ * break — the classic sbrk contract.  A pure query (inc == 0) reads the
+ * kernel break directly and never moves it: passing a cached value back into
+ * sys_brk would shrink the break to the stale cache.  All other calls use a
+ * userspace break cache initialised on first move via sbrk(0).
+ * Returns (void*)-1 on error.  */
 static inline void *sys_sbrk(long inc) {
-    static long brk_cache;          /* process-global userspace break (BSS) */
+    if (inc == 0)
+        return (void *)sys_brk(0);        /* read-only: never touches the break */
+
+    static long brk_cache;                /* process-global userspace break (BSS) */
     if (!brk_cache) {
         long zero = sys_brk(0);
         if (zero <= 0) return (void *)-1;
         brk_cache = zero;
     }
     long old = brk_cache;
-    long nb  = old + inc;           /* overflow checked by the kernel below */
+    long nb  = old + inc;                 /* overflow checked by the kernel below */
     if (nb < 0 || sys_brk((void *)nb) != nb) return (void *)-1;
     brk_cache = nb;
     return (void *)old;

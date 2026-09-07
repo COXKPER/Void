@@ -75,3 +75,10 @@ global elf_vfs_test_end
 elf_vfs_test_start:
     incbin "build/userland/vfs_test.elf"
 elf_vfs_test_end:
+
+align 4096
+global elf_mm_test_start
+global elf_mm_test_end
+elf_mm_test_start:
+    incbin "build/userland/mm_test.elf"
+elf_mm_test_end:
