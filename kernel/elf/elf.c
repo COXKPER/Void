@@ -356,10 +356,20 @@ static elf_status_t copy_segment_data(process_t *p, const elf_loader_t *ctx,
 }
 
 /* ── initial user stack ──────────────────────────────────────────────────
- * Minimal but already System V shaped: RSP is 16-byte aligned and points at
- * argc, with null argv/envp terminators and an AT_NULL auxv entry above it.
- * A future execve() fills these in place rather than reshaping the frame. */
-static elf_status_t setup_user_stack(process_t *p, uint64_t *out_rsp) {
+ * Full System V AMD64 initial frame, seeded word-by-word through the HHDM:
+ *
+ *   [ argc ] [ argv[0] ] [ NULL ] [ envp=NULL ] [ auxv AT_* pairs ] [ AT_NULL ]
+ *
+ * argv[0] is a NUL-terminated string written just below the word frame (the
+ * classic "strings live at the bottom of the initial stack" layout).  A static
+ * crt0 ignores the frame entirely, so every ET_EXEC test stays compatible;
+ * the rtld reads AT_PHDR/AT_PHNUM/AT_BASE from here to relocate the main
+ * binary.  AT_BASE is ELF_DYN_BASE for ET_DYN and 0 for ET_EXEC.
+ *
+ * ponytail: argv/envp are a fixed one-element vector — real argv arrives when
+ * execve() grows a user-supplied vector; nothing here needs reshaping then. */
+static elf_status_t setup_user_stack(process_t *p, const elf_loader_t *ctx,
+                                     uint64_t *out_rsp) {
     uint64_t flags = VMM_WRITE | (nx_ok ? VMM_NX : 0);
 
     for (uint64_t off = 0; off < USER_STACK_SIZE; off += PAGE_SIZE)
@@ -367,14 +377,41 @@ static elf_status_t setup_user_stack(process_t *p, uint64_t *out_rsp) {
                                     flags) != VOID_OK)
             return ELF_ERR_NOMEM;
 
-    uint64_t rsp = (USER_STACK_TOP - 32) & ~0xFULL;
+    /* System V auxv a_type values.  AT_NULL terminates the pair list. */
+    enum { AT_NULL = 0, AT_PHDR = 3, AT_PHENT = 4, AT_PHNUM = 5,
+           AT_PAGESZ = 6, AT_BASE = 7, AT_ENTRY = 9 };
+
+    static const char argv0[] = "program";
+    const uint64_t argv0_len = sizeof(argv0);          /* incl. NUL */
+
+    /* Words: argc, argv[0], argv NUL, envp NUL, then 7 auxv pairs. */
+    const uint64_t n_words = 4 + 2 * 7;
+    uint64_t rsp = (USER_STACK_TOP - n_words * 8) & ~0xFULL;
+
+    /* argv0 string sits just below the word frame, 16-byte aligned.  Both it
+     * and the frame are inside the top stack page, which is mapped above. */
+    uint64_t str_va = (rsp - argv0_len) & ~0xFULL;
+    uint64_t str_phys = vmm_virt_to_phys((uint64_t *)p->cr3, str_va);
+    if (!str_phys) return ELF_ERR_NOMEM;
+    uint8_t *sdst = (uint8_t *)(str_phys + g_boot.hhdm_offset);
+    for (uint64_t i = 0; i < argv0_len; i++) sdst[i] = (uint8_t)argv0[i];
+
     uint64_t phys = vmm_virt_to_phys((uint64_t *)p->cr3, rsp);
     if (!phys) return ELF_ERR_NOMEM;
-
-    /* argc=0, argv[0]=NULL, envp[0]=NULL, auxv AT_NULL — 32 bytes, and the
-     * stack pages are already zeroed, so this is belt-and-braces. */
     uint64_t *slot = (uint64_t *)(phys + g_boot.hhdm_offset);
-    slot[0] = 0; slot[1] = 0; slot[2] = 0; slot[3] = 0;
+
+    uint64_t w = 0;
+    slot[w++] = 1;                              /* argc                     */
+    slot[w++] = str_va;                         /* argv[0]                  */
+    slot[w++] = 0;                              /* argv NULL terminator     */
+    slot[w++] = 0;                              /* envp[0] = NULL           */
+    slot[w++] = AT_PHDR;   slot[w++] = ctx->phdr;          /* biased phdr VA */
+    slot[w++] = AT_PHENT;  slot[w++] = sizeof(Elf64_Phdr);
+    slot[w++] = AT_PHNUM;  slot[w++] = ctx->ehdr->e_phnum;
+    slot[w++] = AT_ENTRY;  slot[w++] = ctx->entry + ctx->base;
+    slot[w++] = AT_BASE;   slot[w++] = ctx->base;   /* ELF_DYN_BASE, or 0   */
+    slot[w++] = AT_PAGESZ; slot[w++] = PAGE_SIZE;
+    slot[w++] = AT_NULL;   slot[w++] = 0;
 
     *out_rsp = rsp;
     return ELF_OK;
@@ -406,7 +443,7 @@ elf_status_t elf_load_into_process(const elf_loader_t *ctx, process_t *p,
         if (s != ELF_OK) return s;
     }
 
-    elf_status_t s = setup_user_stack(p, out_rsp);
+    elf_status_t s = setup_user_stack(p, ctx, out_rsp);
     if (s != ELF_OK) return s;
 
     /* Entry: ET_DYN is relative, biased by the load base. */
