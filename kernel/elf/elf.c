@@ -114,6 +114,23 @@ static const Elf64_Phdr *phdr_at(const Elf64_Ehdr *eh, uint16_t i) {
                                 + (uint64_t)i * sizeof(Elf64_Phdr));
 }
 
+/* ── image top (for the initial heap break) ──────────────────────────────
+ * Highest byte offset (vaddr + memsz) over every PT_LOAD segment.  Callers
+ * page-align this to place the initial brk just past the image.  Runs after
+ * elf_validate(), so every field access is already bounds-checked. */
+uint64_t elf_load_end(const elf_loader_t *ctx) {
+    if (!ctx || !ctx->ehdr) return 0;
+    const Elf64_Ehdr *eh = ctx->ehdr;
+    uint64_t end = 0;
+    for (uint16_t i = 0; i < eh->e_phnum; i++) {
+        const Elf64_Phdr *ph = phdr_at(eh, i);
+        if (ph->p_type != PT_LOAD || ph->p_memsz == 0) continue;
+        uint64_t e = ph->p_vaddr + ph->p_memsz;
+        if (e > end) end = e;
+    }
+    return end;
+}
+
 /* ── elf_validate ────────────────────────────────────────────────────── */
 elf_status_t elf_validate(const void *image, uint64_t size, elf_loader_t *ctx) {
     if (!image || !ctx) return ELF_ERR_INVAL;

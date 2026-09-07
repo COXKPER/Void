@@ -124,8 +124,9 @@ void_status_t process_map_user(process_t *p, uint64_t virt, uint64_t phys, uint6
     if (!p) return VOID_ERR_INVAL;
     /* Refuse anything outside the user half — the kernel half is shared
      * and must never be writable from Ring 3. */
-    if (virt >= 0x0000800000000000ULL) return VOID_ERR_INVAL;
-    if (p->umap_count >= 64) return VOID_ERR_NOMEM;
+    if (virt >= 0x0000800000000000ULL) return VOID_ERR_NOMEM;
+    if (p->umap_count >= sizeof(p->umap) / sizeof(p->umap[0]))
+        return VOID_ERR_NOMEM;
 
     /* PRESENT and USER are not the caller's choice: a page in the user half
      * is by definition present and Ring-3 reachable.  Callers pass intent
@@ -248,6 +249,19 @@ void process_on_switch(thread_t *t) {
     syscall_set_kernel_stack(ktop);
 }
 
+/* ── user heap bootstrap ──────────────────────────────────────────────
+ * Sets the initial heap so brk() starts one page above the image's highest
+ * byte.  heap_start = first page-aligned VA above `image_end`, and the break
+ * sits one page past it (an empty-but-mapped first heap page).  The page
+ * flags follow the image so heap memory is never executable (NX when the
+ * CPU/#loader supports it). */
+static void brk_init(process_t *p, uint64_t image_end) {
+    uint64_t start = (image_end + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+    p->heap_start  = start;
+    p->brk_current = start + PAGE_SIZE;
+    p->brk_perm    = VMM_WRITE | (elf_nx_enabled() ? VMM_NX : 0);
+}
+
 /* ── process_spawn_user ──────────────────────────────────────────────── */
 pid_t_v process_spawn_user(const void *code, uint64_t code_len, pid_t_v parent) {
     if (!code || code_len == 0) return -1;
@@ -281,6 +295,9 @@ pid_t_v process_spawn_user(const void *code, uint64_t code_len, pid_t_v parent) 
             return -1;
         }
     }
+
+    /* ── user heap bootstrap (brk starts just past the code blob) ──── */
+    brk_init(p, USER_CODE_BASE + code_len);
 
     /* ── kernel stack for this thread's syscalls and faults ───────── */
     uint64_t kbase;
@@ -332,6 +349,9 @@ pid_t_v process_spawn_elf(const void *image, uint64_t size, pid_t_v parent) {
         process_destroy(p);
         return (pid_t_v)es;
     }
+
+    /* User heap bootstrap: brk starts just past the image's highest byte. */
+    brk_init(p, elf_load_end(&ctx));
 
     uint64_t kbase;
     uint64_t ktop = sched_alloc_kstack(&kbase);

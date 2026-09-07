@@ -15,6 +15,7 @@
 #include <void/voidfs.h>
 #include <void/device.h>
 #include <dev/serial_drv.h>
+#include <elf/elf.h>
 
 /* Forward declarations for subsystems */
 extern void gdt_init(void);
@@ -155,6 +156,7 @@ void NO_RETURN kernel_main(void) {
     pmm_init();
     vmm_init();
     kheap_init();
+    elf_init();   /* enables NX so user pages (heap/mmap/ELF) can be NX */
 
     voidfs_init();
     dev_init();

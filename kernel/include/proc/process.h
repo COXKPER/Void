@@ -77,10 +77,20 @@ typedef struct process {
     char          cwd[512];
 
     /* user memory bookkeeping: pages we allocated, so exit can free them.
-     * ponytail: flat list of (virt,phys) pairs, 64 max; replace with a
-     * VMA/region list when mmap and demand paging land. */
-    struct { uint64_t virt, phys; } umap[64];
+     * ponytail: flat list of (virt,phys) pairs; replace with a VMA/region
+     * list when demand paging lands (the ELF loader's PRESENT-guard dedup
+     * for shared boundary pages still relies on this flat ownership). */
+    struct { uint64_t virt, phys; } umap[256];
     uint32_t      umap_count;
+
+    /* user heap (Phase 12, brk):
+     *   heap_start   page-aligned VA just past the image's last byte
+     *   brk_current  current break (== heap_start -> empty heap)
+     *   brk_perm     the VMM flags heap pages are mapped with (WRITE|NX)
+     * Grows upward from heap_start; brk() moves brk_current. */
+    uint64_t      heap_start;
+    uint64_t      brk_current;
+    uint64_t      brk_perm;
 
     /* IPC handle table (Phase 7 merger) */
     struct ipc_handle_table *ipc_handles;

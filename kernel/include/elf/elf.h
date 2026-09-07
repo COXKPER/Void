@@ -127,6 +127,11 @@ struct process;
 elf_status_t elf_load_into_process(const elf_loader_t *ctx, struct process *p,
                                    uint64_t *out_entry, uint64_t *out_rsp);
 
+/* Highest byte offset (vaddr + memsz) over the image's PT_LOAD segments,
+ * not page-aligned.  Callers use this to place the initial heap break just
+ * past the image.  Valid at any time after elf_validate() on the same ctx. */
+uint64_t elf_load_end(const elf_loader_t *ctx);
+
 /* Resolve a user pathname to a kernel-resident executable image.
  *
  * There is no VFS yet, so every executable is a fixed name built into the
