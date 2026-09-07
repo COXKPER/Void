@@ -117,9 +117,10 @@ static const Elf64_Phdr *phdr_at(const Elf64_Ehdr *eh, uint16_t i) {
 }
 
 /* ── image top (for the initial heap break) ──────────────────────────────
- * Highest byte offset (vaddr + memsz) over every PT_LOAD segment.  Callers
- * page-align this to place the initial brk just past the image.  Runs after
- * elf_validate(), so every field access is already bounds-checked. */
+ * Highest byte offset (vaddr + memsz, biased by the DYN base) over every
+ * PT_LOAD segment.  Callers page-align this to place the initial brk just
+ * past the image.  Runs after elf_validate(), so every field access is
+ * already bounds-checked. */
 uint64_t elf_load_end(const elf_loader_t *ctx) {
     if (!ctx || !ctx->ehdr) return 0;
     const Elf64_Ehdr *eh = ctx->ehdr;
@@ -127,7 +128,7 @@ uint64_t elf_load_end(const elf_loader_t *ctx) {
     for (uint16_t i = 0; i < eh->e_phnum; i++) {
         const Elf64_Phdr *ph = phdr_at(eh, i);
         if (ph->p_type != PT_LOAD || ph->p_memsz == 0) continue;
-        uint64_t e = ph->p_vaddr + ph->p_memsz;
+        uint64_t e = ph->p_vaddr + ctx->base + ph->p_memsz;
         if (e > end) end = e;
     }
     return end;
@@ -152,7 +153,7 @@ elf_status_t elf_validate(const void *image, uint64_t size, elf_loader_t *ctx) {
     if (eh->e_ident[EI_VERSION] != EV_CURRENT)  return ELF_ERR_NOEXEC;
 
     /* ── header self-consistency ────────────────────────────────────── */
-    if (eh->e_type    != ET_EXEC)             return ELF_ERR_NOEXEC;
+    if (eh->e_type != ET_EXEC && eh->e_type != ET_DYN) return ELF_ERR_NOEXEC;
     if (eh->e_machine != EM_X86_64)           return ELF_ERR_NOEXEC;
     if (eh->e_version != EV_CURRENT)          return ELF_ERR_NOEXEC;
     if (eh->e_ehsize  != sizeof(Elf64_Ehdr))  return ELF_ERR_NOEXEC;
@@ -174,8 +175,30 @@ elf_status_t elf_validate(const void *image, uint64_t size, elf_loader_t *ctx) {
     uint32_t nloads = 0;
     bool entry_ok = false;
 
+    /* ET_DYN: fixed deterministic base (no ASLR), above existing tests,
+     * below the stack.  Pre-bias addressing is relative to this. */
+    uint64_t base = (eh->e_type == ET_DYN) ? ELF_DYN_BASE : 0;
+
+    /* PT_INTERP: the bytes are the interpreter path (ld.so).  Track the
+     * valid bounds so the loader can run the interp instead of the binary. */
+    char     interp_path[64];
+    uint64_t interp_off = 0, interp_len = 0;
+
     for (uint16_t i = 0; i < eh->e_phnum; i++) {
         const Elf64_Phdr *ph = phdr_at(eh, i);
+
+        if (ph->p_type == PT_INTERP) {
+            /* Interpreter path: a NUL-terminated string inside the file. */
+            if (ph->p_filesz == 0 || ph->p_offset >= size) return ELF_ERR_NOEXEC;
+            if (ph->p_filesz >= sizeof(interp_path))       return ELF_ERR_NOEXEC;
+            if (ph->p_offset + ph->p_filesz > size)        return ELF_ERR_NOEXEC;
+            interp_off = ph->p_offset;
+            interp_len = ph->p_filesz;
+            continue;
+        }
+
+        if (ph->p_type == PT_DYNAMIC) continue;   /* consumed by rtld */
+
         if (ph->p_type != PT_LOAD) continue;   /* PT_NOTE/PT_GNU_* etc: ignored */
         if (ph->p_memsz == 0)      continue;   /* nothing to map */
 
@@ -186,14 +209,16 @@ elf_status_t elf_validate(const void *image, uint64_t size, elf_loader_t *ctx) {
         if (ph->p_offset > size)                 return ELF_ERR_NOEXEC;
         if (ph->p_filesz > size - ph->p_offset)  return ELF_ERR_NOEXEC;
 
-        /* virtual range: wrap first, then bounds.  Checking vend against
-         * USER_MAX_VADDR rejects kernel-half and non-canonical targets in
-         * one comparison, since everything at or above that limit is one or
-         * the other. */
+        /* virtual range: wrap first, then bounds.  For ET_DYN the p_vaddr is
+         * relative — the load base makes it the real user address.  Checking
+         * the biased vend against USER_MAX_VADDR rejects kernel-half and
+         * non-canonical targets in one comparison. */
+        uint64_t vaddr = ph->p_vaddr + base;
+        if (vaddr < ph->p_vaddr) return ELF_ERR_NOEXEC;             /* wrapped */
         if (ph->p_vaddr + ph->p_memsz < ph->p_vaddr) return ELF_ERR_NOEXEC;
-        uint64_t vend = ph->p_vaddr + ph->p_memsz;
-        if (ph->p_vaddr < USER_MIN_VADDR) return ELF_ERR_NOEXEC;
-        if (vend > USER_MAX_VADDR)        return ELF_ERR_NOEXEC;
+        uint64_t vend = vaddr + ph->p_memsz;
+        if (vaddr < USER_MIN_VADDR) return ELF_ERR_NOEXEC;
+        if (vend > USER_MAX_VADDR)  return ELF_ERR_NOEXEC;
 
         /* permissions: refuse write+execute outright rather than mapping a
          * page Ring 3 could rewrite and then run. */
@@ -211,7 +236,7 @@ elf_status_t elf_validate(const void *image, uint64_t size, elf_loader_t *ctx) {
         }
 
         /* must not collide with the stack this loader is about to map */
-        if (ph->p_vaddr < USER_STACK_TOP &&
+        if (vaddr < USER_STACK_TOP &&
             vend > USER_STACK_TOP - USER_STACK_SIZE)
             return ELF_ERR_NOEXEC;
 
@@ -219,25 +244,43 @@ elf_status_t elf_validate(const void *image, uint64_t size, elf_loader_t *ctx) {
          * boundary is fine and handled at load time; overlapping bytes would
          * make one segment's BSS clobber another's contents. */
         for (uint32_t j = 0; j < nloads; j++)
-            if (ph->p_vaddr < seen[j].end && vend > seen[j].start)
+            if (vaddr < seen[j].end && vend > seen[j].start)
                 return ELF_ERR_NOEXEC;
 
-        seen[nloads].start = ph->p_vaddr;
+        seen[nloads].start = vaddr;
         seen[nloads].end   = vend;
         nloads++;
 
         if ((ph->p_flags & PF_X) &&
-            eh->e_entry >= ph->p_vaddr && eh->e_entry < vend)
+            eh->e_entry >= ph->p_vaddr && eh->e_entry < ph->p_vaddr + ph->p_memsz)
             entry_ok = true;
     }
 
     if (nloads == 0) return ELF_ERR_NOEXEC;
     if (!entry_ok)   return ELF_ERR_NOEXEC;   /* never jump outside code */
 
+    /* If the binary asked for an interpreter, copy its path (already range
+     * checked above) so the loader can hand control to ld.so. */
+    if (interp_len) {
+        if (interp_len >= sizeof(ctx->interp)) return ELF_ERR_NOEXEC;
+        for (uint64_t i = 0; i < interp_len; i++)
+            ctx->interp[i] = (char)((const uint8_t *)image)[interp_off + i];
+        ctx->interp[interp_len] = '\0';
+        ctx->has_interp = true;
+    } else {
+        ctx->has_interp = false;
+    }
+
     ctx->image      = (const uint8_t *)image;
     ctx->image_size = size;
     ctx->ehdr       = eh;
-    ctx->entry      = eh->e_entry;
+    ctx->base       = base;
+    ctx->entry      = eh->e_entry;   /* pre-bias for ET_DYN; loader biases */
+    /* PT_PHDR address for the auxv: the program-header table's runtime VA.
+     * e_phoff is a file offset; for an ELF loaded at `base` with a 4 KiB-
+     * aligned p_align it equals base + e_phoff.  For ET_EXEC there is no
+     * base, so this is just e_phoff (a lower-half VA from the link). */
+    ctx->phdr       = eh->e_phoff + base;
     return ELF_OK;
 }
 
@@ -255,11 +298,13 @@ static uint64_t seg_page_flags(uint32_t p_flags) {
  * A page may already be present because an adjacent segment started inside
  * it.  In that case the frame is reused and permissions are unioned — and if
  * the union would be simultaneously writable and executable, the binary is
- * refused instead of silently producing a W+X page. */
-static elf_status_t map_segment_pages(process_t *p, const Elf64_Phdr *ph) {
+ * refused instead of silently producing a W+X page. `base` biases the
+ * (relative) p_vaddr into the real user address. */
+static elf_status_t map_segment_pages(process_t *p, const Elf64_Phdr *ph,
+                                      uint64_t base) {
     uint64_t flags = seg_page_flags(ph->p_flags);
-    uint64_t first = ph->p_vaddr & PAGE_MASK;
-    uint64_t last  = (ph->p_vaddr + ph->p_memsz - 1) & PAGE_MASK;
+    uint64_t first = (ph->p_vaddr + base) & PAGE_MASK;
+    uint64_t last  = (ph->p_vaddr + base + ph->p_memsz - 1) & PAGE_MASK;
 
     for (uint64_t va = first; va <= last; va += PAGE_SIZE) {
         uint64_t pte = vmm_get_pte((uint64_t *)p->cr3, va);
@@ -289,12 +334,13 @@ static elf_status_t map_segment_pages(process_t *p, const Elf64_Phdr *ph) {
 /* ── copy one segment's file bytes ───────────────────────────────────────
  * Writes through the HHDM alias, page by page.  vmm_virt_to_phys() already
  * folds the intra-page offset into its result, so an unaligned p_vaddr needs
- * no special case here — only the chunk size does. */
+ * no special case here — only the chunk size does.  `base` biases the
+ * (relative) p_vaddr. */
 static elf_status_t copy_segment_data(process_t *p, const elf_loader_t *ctx,
-                                      const Elf64_Phdr *ph) {
+                                      const Elf64_Phdr *ph, uint64_t base) {
     uint64_t done = 0;
     while (done < ph->p_filesz) {
-        uint64_t va    = ph->p_vaddr + done;
+        uint64_t va    = ph->p_vaddr + base + done;
         uint64_t chunk = PAGE_SIZE - (va & (PAGE_SIZE - 1));
         if (chunk > ph->p_filesz - done) chunk = ph->p_filesz - done;
 
@@ -348,7 +394,7 @@ elf_status_t elf_load_into_process(const elf_loader_t *ctx, process_t *p,
         const Elf64_Phdr *ph = phdr_at(eh, i);
         if (ph->p_type != PT_LOAD || ph->p_memsz == 0) continue;
 
-        elf_status_t s = map_segment_pages(p, ph);
+        elf_status_t s = map_segment_pages(p, ph, ctx->base);
         if (s != ELF_OK) return s;
     }
 
@@ -356,13 +402,14 @@ elf_status_t elf_load_into_process(const elf_loader_t *ctx, process_t *p,
         const Elf64_Phdr *ph = phdr_at(eh, i);
         if (ph->p_type != PT_LOAD || ph->p_memsz == 0) continue;
 
-        elf_status_t s = copy_segment_data(p, ctx, ph);
+        elf_status_t s = copy_segment_data(p, ctx, ph, ctx->base);
         if (s != ELF_OK) return s;
     }
 
     elf_status_t s = setup_user_stack(p, out_rsp);
     if (s != ELF_OK) return s;
 
-    *out_entry = ctx->entry;
+    /* Entry: ET_DYN is relative, biased by the load base. */
+    *out_entry = ctx->entry + ctx->base;
     return ELF_OK;
 }

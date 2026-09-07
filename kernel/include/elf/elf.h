@@ -62,10 +62,12 @@ typedef struct {
 #define EV_CURRENT      1
 
 #define ET_EXEC         2       /* executable */
+#define ET_DYN          3       /* shared object / position-independent */
 #define EM_X86_64       62      /* x86-64 */
 
 #define PT_LOAD         1       /* loadable segment */
-#define PT_DYNAMIC      2       /* dynamic linking info (skip for now) */
+#define PT_DYNAMIC      2       /* dynamic linking info */
+#define PT_INTERP       3       /* interpreter path (ld.so) */
 
 #define PF_X            (1U << 0)       /* executable */
 #define PF_W            (1U << 1)       /* writable */
@@ -81,6 +83,12 @@ typedef enum {
     ELF_ERR_INVAL    = -22,    /* EINVAL: invalid argument */
 } elf_status_t;
 
+/* Deterministic (non-ASLR) load base for ET_DYN images.  1 GiB — above every
+ * existing test executable (0x400000), far below the stack (0x700000000000),
+ * so no collision.  A fixed base is chosen because Void has no ASLR; the base
+ * is the same on every boot by design. */
+#define ELF_DYN_BASE   0x0000000040000000ULL
+
 /* Refuse absurd program-header counts before iterating.  A real executable
  * has a handful; a large count is either corruption or an attempt to make
  * the kernel spin. */
@@ -95,7 +103,18 @@ typedef struct {
     const uint8_t    *image;        /* kernel-resident ELF image           */
     uint64_t          image_size;   /* its length in bytes                 */
     const Elf64_Ehdr *ehdr;         /* == image, once validated            */
-    uint64_t          entry;        /* validated e_entry                   */
+    uint64_t          entry;        /* validated e_entry (pre-bias)        */
+    uint64_t          base;         /* load base: 0 for ET_EXEC, ELF_DYN_BASE
+                                     * for ET_DYN (deterministic, non-ASLR) */
+    /* PT_INTERP, when present (ET_DYN): byte range of the interpreter path
+     * inside `image`, and its NUL-terminated copy.  Only ever set when the
+     * kernel should hand control to a userland dynamic linker. */
+    bool              has_interp;
+    uint64_t          interp_off;   /* offset of interp string in image   */
+    uint64_t          interp_len;   /* its byte length incl. NUL          */
+    char              interp[64];   /* NUL-terminated path (validated)    */
+    uint64_t          phdr;         /* PT_PHDR-ish: p_vaddr of phdr table
+                                     * (pre-bias), for the auxv AT_PHDR     */
 } elf_loader_t;
 
 /* ── public API ──────────────────────────────────────────────────────── */
