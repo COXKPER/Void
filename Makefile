@@ -31,7 +31,7 @@ override UCFLAGS := -std=c2x -Wall -Wextra -O2 \
 
 override ULDFLAGS := -nostdlib -static -z max-page-size=0x1000 -z noexecstack
 
-UELF := build/userland/elf_test.elf build/userland/elf_packed.elf build/userland/init.elf build/userland/ipc_test.elf build/userland/forkexec_test.elf build/userland/calc.elf build/userland/srv_test.elf build/userland/lifecycle_test.elf build/userland/vfs_test.elf build/userland/mm_test.elf build/userland/malloc_test.elf
+UELF := build/userland/elf_test.elf build/userland/elf_packed.elf build/userland/init.elf build/userland/ipc_test.elf build/userland/forkexec_test.elf build/userland/calc.elf build/userland/srv_test.elf build/userland/lifecycle_test.elf build/userland/vfs_test.elf build/userland/mm_test.elf build/userland/malloc_test.elf build/userland/tty_test.elf
 
 # libc runtime objects (freestanding userland helpers); linked into the
 # tests that need them.  Compiled with the same UCFLAGS as the tests.
@@ -121,6 +121,13 @@ build/userland/malloc_test.c.o: userland/malloc_test.c
 
 build/userland/malloc_test.elf: build/userland/malloc_test.c.o $(LIBC_OBJ) build/userland/crt0.asm.o userland/user.ld
 	$(LD) $(ULDFLAGS) -T userland/user.ld build/userland/crt0.asm.o $(LIBC_OBJ) $< -o $@
+
+build/userland/tty_test.c.o: userland/tty_test.c
+	@mkdir -p $(dir $@)
+	$(CC) $(UCFLAGS) -c $< -o $@
+
+build/userland/tty_test.elf: build/userland/tty_test.c.o build/userland/crt0.asm.o userland/user.ld
+	$(LD) $(ULDFLAGS) -T userland/user.ld build/userland/crt0.asm.o $< -o $@
 
 $(LIBC_OBJ): build/userland/libc/%.o: userland/libc/%.c
 	@mkdir -p $(dir $@)

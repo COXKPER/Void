@@ -20,6 +20,14 @@
 
 static int failures;
 
+static void print_dec(long v) {
+    char buf[16]; int i = 0;
+    if (v == 0) buf[i++] = '0';
+    if (v < 0) { sys_write(1, "-", 1); v = -v; }
+    while (v > 0 && i < 15) { buf[i++] = '0' + (char)(v % 10); v /= 10; }
+    while (i > 0) sys_write(1, &buf[--i], 1);
+}
+
 /* Print "<pre><count> fail(s)\n" as ONE sys_write.  The old split across
  * three calls let other processes' bytes interleave into the shared COM1
  * stream between the writes, tearing the "[IPC test] Done:" line the boot

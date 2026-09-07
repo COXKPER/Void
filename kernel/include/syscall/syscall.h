@@ -37,6 +37,7 @@ typedef struct process process_t;
 #define SYS_mmap                 9    /* Linux x86_64 mmap(2)           */
 #define SYS_munmap              11    /* Linux x86_64 munmap(2)         */
 #define SYS_brk                 12    /* Linux x86_64 brk(2)            */
+#define SYS_ioctl               16    /* Linux x86_64 ioctl(2) (TTY only) */
 #define SYS_sched_yield          24
 #define SYS_getpid               39
 #define SYS_exit                 60

@@ -89,3 +89,10 @@ global elf_malloc_test_end
 elf_malloc_test_start:
     incbin "build/userland/malloc_test.elf"
 elf_malloc_test_end:
+
+align 4096
+global elf_tty_test_start
+global elf_tty_test_end
+elf_tty_test_start:
+    incbin "build/userland/tty_test.elf"
+elf_tty_test_end:

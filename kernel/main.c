@@ -15,6 +15,7 @@
 #include <void/voidfs.h>
 #include <void/device.h>
 #include <dev/serial_drv.h>
+#include <dev/tty.h>
 #include <elf/elf.h>
 
 /* Forward declarations for subsystems */
@@ -40,6 +41,7 @@ extern const uint8_t elf_lifecycle_test_start[], elf_lifecycle_test_end[];
 extern const uint8_t elf_vfs_test_start[], elf_vfs_test_end[];
 extern const uint8_t elf_mm_test_start[], elf_mm_test_end[];
 extern const uint8_t elf_malloc_test_start[], elf_malloc_test_end[];
+extern const uint8_t elf_tty_test_start[], elf_tty_test_end[];
 
 /* ELF self-check (kernel/elf/elf_selftest.c) */
 uint32_t elf_selftest(const void *image, uint64_t size);
@@ -163,10 +165,14 @@ void NO_RETURN kernel_main(void) {
     voidfs_init();
     dev_init();
     serial_drv_register();
+    tty_init();    /* line discipline on top of the serial console */
 
     /* Phase 11 device registry regression: deterministic [DEV] checks,
      * no interrupts, runs before the scheduler exists. */
     dev_self_test();
+
+    /* Phase 14 TTY line-discipline self-check (synthetic bytes → tty_feed) */
+    tty_selftest();
 
     idt_register_irq(0, timer_handler);
     lapic_init(100);
@@ -268,6 +274,17 @@ void NO_RETURN kernel_main(void) {
         kprintf("[init] malloc test pid %u running.\n\r", (uint64_t)malloc_test_pid);
     } else {
         kprintf("[init] ERROR: malloc test spawn failed (%d)\n\r", (int)malloc_test_pid);
+    }
+
+    /* Phase 14 TTY test: console splice from the user side. */
+    kprintf("[init] Spawning tty test...\n\r");
+    pid_t_v tty_test_pid = process_spawn_elf(elf_tty_test_start,
+                                             (uint64_t)(elf_tty_test_end - elf_tty_test_start),
+                                             0);
+    if (tty_test_pid > 0) {
+        kprintf("[init] tty test pid %u running.\n\r", (uint64_t)tty_test_pid);
+    } else {
+        kprintf("[init] ERROR: tty test spawn failed (%d)\n\r", (int)tty_test_pid);
     }
 
     sched_start();

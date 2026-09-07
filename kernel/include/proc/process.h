@@ -36,7 +36,8 @@ typedef enum {
  * kernel VFS (voidfs.c), whose `object` points at an VFS file object. */
 typedef enum {
     FD_NONE = 0,
-    FD_SERIAL,        /* console on COM1 — stdin/stdout/stderr for now  */
+    FD_SERIAL,        /* raw console on COM1 — no line discipline       */
+    FD_TTY,           /* cooked console — fd 0/1/2 terminal (Phase 14)  */
     FD_VFS,           /* kernel VFS file/dir (object = vfs_file_t)      */
 } fd_type_t;
 

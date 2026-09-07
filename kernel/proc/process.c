@@ -101,15 +101,15 @@ process_t *process_alloc(pid_t_v parent) {
         p->brk_current = 0;
         p->brk_perm    = 0;
 
-        /* fd 0/1/2 → console, mirroring stdin/stdout/stderr. */
+        /* fd 0/1/2 → the TTY console, mirroring stdin/stdout/stderr. */
         for (int f = 0; f < MAX_FDS; f++) {
             p->fds[f].type   = FD_NONE;
             p->fds[f].object = NULL;
             p->fds[f].offset = 0;
         }
-        p->fds[0].type = FD_SERIAL;
-        p->fds[1].type = FD_SERIAL;
-        p->fds[2].type = FD_SERIAL;
+        p->fds[0].type = FD_TTY;
+        p->fds[1].type = FD_TTY;
+        p->fds[2].type = FD_TTY;
 
         /* every process starts in the root directory */
         p->cwd[0] = '/';

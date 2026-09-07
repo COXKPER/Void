@@ -30,6 +30,7 @@
 #define SYS_getcwd      79
 #define SYS_chdir       80
 #define SYS_readdir     89
+#define SYS_ioctl       16      /* Linux x86_64 ioctl(2) number          */
 
 /* ── open(2) flags ──────────────────────────────────────────────────── */
 #define O_RDONLY 0
@@ -200,6 +201,17 @@ static inline void *sys_sbrk(long inc) {
 
 static inline long sys_readdir(int fd, char *name) {
     return syscall2(SYS_readdir, fd, (long)name);
+}
+
+/* TTY control requests (Phase 14).  Mirrors kernel/include/dev/tty.h.
+ * Echo on/off are the canonical testable toggles. */
+#define VOID_TTY_ECHO_ON  0x545401
+#define VOID_TTY_ECHO_OFF 0x545402
+
+/* ioctl(2): Linux number 16; only the TTY requests above exist.  A
+ * non-TTY fd (or an unknown request) is -VE_INVAL/-VE_BADF. */
+static inline long sys_ioctl(int fd, unsigned long req, void *arg) {
+    return syscall3(SYS_ioctl, fd, req, (long)arg);
 }
 
 static inline void sys_exit(int status) {

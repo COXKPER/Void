@@ -14,6 +14,7 @@
 #include <mm/pmm.h>
 #include <dev/serial.h>
 #include <dev/serial_drv.h>
+#include <dev/tty.h>
 #include <void/boot.h>
 #include <void/voidfs.h>
 #include <ipc/ipc.h>
@@ -262,9 +263,11 @@ bool copy_to_user(process_t *p, uint64_t udst, const void *src, uint64_t len) {
 }
 
 /* ── sys_read ────────────────────────────────────────────────────────────
- * Dispatch on the fd type. FD_SERIAL (console) reads from serial input (RBR)
- * on port COM1, non-blocking. FD_VFS serves from the embedded tree via the
- * VFS layer. Returns byte count, 0 (no data / EOF), or -error. */
+ * Dispatch on the fd type. FD_TTY (the console) reads staged input from the
+ * line discipline — echo/canonical/backspace/EOF handled in tty.c — which
+ * splices on top of the serial device. Non-blocking: 0 means nothing ready,
+ * exactly as the old FD_SERIAL read behaved. FD_VFS serves from the embedded
+ * tree via the VFS layer. Returns byte count, 0 (no data / EOF), or -error. */
 static int64_t sys_read(process_t *p, int32_t fd, uint64_t ubuf, uint64_t count) {
     if (fd < 0 || fd >= MAX_FDS)        return -VE_BADF;
     if (count == 0)                     return 0;
@@ -272,17 +275,16 @@ static int64_t sys_read(process_t *p, int32_t fd, uint64_t ubuf, uint64_t count)
     if (p->fds[fd].type == FD_VFS)
         return sys_vfs_read(p, fd, ubuf, count);
 
-    if (p->fds[fd].type != FD_SERIAL)   return -VE_BADF;
-
-    /* The console is one shared device instance owned by the kernel; fd 0
-     * routes through the device layer.  dev_read gathers available chars
-     * non-blocking, exactly as the old serial_getchar loop did. */
-    void *inst = serial_drv_instance();
-    if (!inst) return -VE_IO;            /* console not up (boot-order bug) */
+    if (p->fds[fd].type != FD_TTY && p->fds[fd].type != FD_SERIAL)
+        return -VE_BADF;
 
     char buf[256];
     uint64_t to_read = count > sizeof(buf) ? sizeof(buf) : count;
-    int nread = dev_read(inst, (uint64_t)(uintptr_t)buf, to_read);
+    int nread;
+    if (p->fds[fd].type == FD_TTY)
+        nread = tty_read((uint64_t)(uintptr_t)buf, to_read);
+    else
+        nread = dev_read(serial_drv_instance(), (uint64_t)(uintptr_t)buf, to_read);
     if (nread < 0) return (int64_t)nread;
 
     if (nread > 0) {
@@ -293,9 +295,9 @@ static int64_t sys_read(process_t *p, int32_t fd, uint64_t ubuf, uint64_t count)
 }
 
 /* ── sys_write ───────────────────────────────────────────────────────────
- * Dispatch on the fd type. FD_SERIAL writes to the console; FD_VFS goes to
- * the VFS layer (which currently rejects writes — the tree is readonly).
- * Returns byte count, or -error. */
+ * Dispatch on the fd type. FD_TTY/FD_SERIAL write to the console; FD_VFS
+ * goes to the VFS layer (which currently rejects writes — the tree is
+ * readonly). Returns byte count, or -error. */
 static int64_t sys_write(process_t *p, int32_t fd, uint64_t ubuf, uint64_t count) {
     if (fd < 0 || fd >= MAX_FDS)        return -VE_BADF;
     if (count == 0)                     return 0;
@@ -303,7 +305,8 @@ static int64_t sys_write(process_t *p, int32_t fd, uint64_t ubuf, uint64_t count
     if (p->fds[fd].type == FD_VFS)
         return sys_vfs_write(p, fd, ubuf, count);
 
-    if (p->fds[fd].type != FD_SERIAL)   return -VE_BADF;
+    if (p->fds[fd].type != FD_TTY && p->fds[fd].type != FD_SERIAL)
+        return -VE_BADF;
 
     void *inst = serial_drv_instance();
     if (!inst) return -VE_IO;            /* console not up (boot-order bug) */
@@ -319,7 +322,11 @@ static int64_t sys_write(process_t *p, int32_t fd, uint64_t ubuf, uint64_t count
         if (!copy_from_user(p, buf, ubuf + written, chunk))
             return written ? (int64_t)written : -VE_FAULT;
 
-        int w = dev_write(inst, buf, chunk);
+        int w;
+        if (p->fds[fd].type == FD_TTY)
+            w = tty_write(buf, chunk);
+        else
+            w = dev_write(inst, buf, chunk);
         if (w < 0) return written ? (int64_t)written : (int64_t)w;
         written += (uint64_t)w;
     }
@@ -420,6 +427,17 @@ isr_frame_t *syscall_dispatch(isr_frame_t *frame) {
     case SYS_svc_lookup:
         frame->rax = (uint64_t)(int64_t)sys_sr_lookup((const char *)frame->rdi);
         return frame;
+
+    case SYS_ioctl: {
+        int32_t f = (int32_t)frame->rdi;
+        /* Only the console fds route to tty_ioctl; a non-TTY fd is -VE_BADF. */
+        if (f < 0 || f >= MAX_FDS) { frame->rax = (uint64_t)(-VE_BADF); }
+        else if (p && p->fds[f].type == FD_TTY)
+            frame->rax = (uint64_t)(int64_t)tty_ioctl(frame->rsi, (void *)frame->rdx);
+        else
+            frame->rax = (uint64_t)(int64_t)-VE_BADF;
+        return frame;
+    }
 
     case SYS_open:
         frame->rax = (uint64_t)sys_vfs_open(p, frame->rdi, (int)frame->rsi);
