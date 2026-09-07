@@ -44,7 +44,12 @@ typedef struct {
 } btag_t;                      /* 16 bytes                              */
 
 #define HEADER_SZ 16
-#define MIN_BLOCK 32           /* header + 16 bytes of free-link payload */
+/* Smallest block the allocator ever makes.  A free block must hold the
+ * free-list node (prev,next = 16 bytes at blk+16) AND its footer (16 bytes
+ * at blk+size-16) without overlap, so the node's last 16 bytes need to be
+ * before the footer starts: 16 (header) + 16 (node) + 16 (footer) = 48.
+ * 32 was a bug (node and footer collided, truncating the list). */
+#define MIN_BLOCK 48
 
 /* free-list node lives in the payload of a free block */
 typedef struct fnode { struct fnode *prev, *next; } fnode_t;
@@ -94,6 +99,21 @@ static void fl_insert(char *blk) {
 
     char *nx = blk + h->size;
     if (nx < a_end) H(nx)->flags |= B_PREV;
+}
+
+/* Insert a free block, coalescing a following free block first so the
+ * list never holds two adjacent free blocks.  Used by every split site
+ * (cut_first_fit remainder, realloc shrink tail) where the block placed
+ * on the list may abut one that is already free.  `fl_insert` alone does
+ * not coalesce. */
+static void insert_free(char *blk) {
+    btag_t *h = H(blk);
+    char *nx = blk + h->size;
+    if (nx < a_end && !(H(nx)->flags & B_ALLOC)) {
+        h->size += H(nx)->size;
+        fl_unlink(FN(nx));
+    }
+    fl_insert(blk);
 }
 
 /* The free block whose end is exactly the arena end, or NULL.  This is
@@ -178,19 +198,15 @@ static void *cut_first_fit(size_t need) {
 
         if (h->size - need >= MIN_BLOCK) {
             /* split: prefix P becomes allocated, remainder R stays free  */
-            btag_t *r = H(blk) + need / 16;   /* r at blk + need           */
-            r->size  = h->size - need;
-            r->flags = 0;          /* P (allocated) precedes R             */
-            btag_t *rf = FOOT((char *)r);
-            rf->size  = r->size; rf->flags = r->flags;
-
-            fnode_t *rn = FN((char *)r);
-            rn->prev = n->prev; rn->next = n->next;
-            if (rn->prev) rn->prev->next = rn; else free_head = rn;
-            if (rn->next) rn->next->prev = rn;
-
+            size_t old = h->size;
+            fl_unlink(n);              /* the node is P's payload now      */
             h->size  = need;
             h->flags = (h->flags & (B_PREV | B_MMAP)) | B_ALLOC;
+
+            btag_t *r = H(blk) + need / 16;   /* R at blk + need           */
+            r->size  = old - need;
+            r->flags = 0;              /* P (allocated) precedes R         */
+            insert_free((char *)r);    /* links R, writes footer, coalesces */
             return (char *)blk + HEADER_SZ;
         }
 
@@ -289,6 +305,55 @@ void free(void *ptr) {
         return;
     }
     heap_free(v);
+}
+
+/* ── calloc / realloc ───────────────────────────────────────────────────── */
+
+void *calloc(size_t nmemb, size_t size) {
+    size_t total;
+    if (__builtin_mul_overflow(nmemb, size, &total))
+        return NULL;                       /* overflow -> refuse, not wrap  */
+    void *p = malloc(total);
+    if (p) memset(p, 0, total);
+    return p;
+}
+
+void *realloc(void *ptr, size_t size) {
+    if (!ptr) return malloc(size);
+    if (size == 0) { free(ptr); return NULL; }
+
+    char *blk = (char *)ptr - (ptrdiff_t)HEADER_SZ;
+    btag_t *h = H(blk);
+    size_t old_size = h->size - HEADER_SZ;         /* user bytes            */
+    size_t new_need = HEADER_SZ + align16(size);
+    if (new_need < MIN_BLOCK) new_need = MIN_BLOCK;
+
+    /* Shrink (or same size): split the tail off the block in place — safe
+     * for brk-heap blocks; mmap blocks simply keep their full mapping. */
+    if (new_need <= h->size) {
+        size_t tail = h->size - new_need;
+        if (tail >= MIN_BLOCK && !(h->flags & B_MMAP)) {
+            btag_t *r = H(blk) + new_need / 16;
+            r->size  = tail;
+            r->flags = 0;                  /* blk (still allocated) precedes it */
+            insert_free((char *)r);        /* links R, footer, coalesces */
+            h->size  = new_need;
+            btag_t *f = FOOT(blk); f->size = h->size; f->flags = h->flags;
+        }
+        return ptr;
+    }
+
+    /* Grow: allocate a new block, copy the old data, free the old one.  On
+     * allocation failure the original is returned untouched (the §16
+     * regression check).  In-place growth is deliberately not attempted.
+     * ponytail: an in-place grow (absorb an adjacent free block, or extend
+     * the arena top tail) avoids the copy for common sequential growth; not
+     * needed for correctness, add when profiling calls for it. */
+    void *nv = malloc(size);
+    if (!nv) return NULL;
+    memcpy(nv, ptr, old_size);
+    free(ptr);
+    return nv;
 }
 
 /* ── self-check (the regression test calls it between phases) ───────────
