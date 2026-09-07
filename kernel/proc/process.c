@@ -354,6 +354,18 @@ pid_t_v process_spawn_elf(const void *image, uint64_t size, pid_t_v parent) {
         return (pid_t_v)es;
     }
 
+    /* A PT_INTERP hands control to the dynamic linker instead: it is loaded
+     * into the same address space (its segments only — the auxv already
+     * describes the main binary), then becomes the entry point. */
+    uint64_t entry_override = entry;
+    if (ctx.has_interp) {
+        es = elf_load_interp(&ctx, p, &entry_override);
+        if (es != ELF_OK) {
+            process_destroy(p);
+            return (pid_t_v)es;
+        }
+    }
+
     /* User heap bootstrap: brk starts just past the image's highest byte. */
     brk_init(p, elf_load_end(&ctx));
 
@@ -371,7 +383,7 @@ pid_t_v process_spawn_elf(const void *image, uint64_t size, pid_t_v parent) {
     f->rsp    = rsp;
     f->rflags = 0x202;                    /* IF=1; IOPL=0, so no port I/O   */
     f->cs     = GDT_SEL_UCODE3;
-    f->rip    = entry;
+    f->rip    = entry_override;
     f->vector = 0;
 
     thread_t *t = sched_adopt_thread((uint64_t)f, p->cr3, p,
@@ -585,6 +597,19 @@ isr_frame_t *process_execve_current(isr_frame_t *frame, uint64_t upath) {
         return frame;
     }
 
+    /* A PT_INTERP hands control to the dynamic linker: load it into the
+     * scratch space (segments only — the auxv already describes the new main
+     * image) and make it the entry the swap installs below. */
+    uint64_t entry_override = entry;
+    if (ctx.has_interp) {
+        es = elf_load_interp(&ctx, &scratch, &entry_override);
+        if (es != ELF_OK) {
+            process_destroy_user_space(&scratch);
+            if (frame) frame->rax = (uint64_t)(int64_t)es;
+            return frame;
+        }
+    }
+
     /* New image gets a fresh heap break just past its highest byte. */
     brk_init(&scratch, elf_load_end(&ctx));
 
@@ -618,12 +643,12 @@ isr_frame_t *process_execve_current(isr_frame_t *frame, uint64_t upath) {
 
     /* New entry + stack in the *current* frame; nothing else about the
      * hardware context (GPRs, RFLAGS) changes — PID/fds/IPC all survive. */
-    frame->rip = entry;
+    frame->rip = entry_override;
     frame->rsp = rsp;
     frame->rax = 0;             /* sys_execve returns 0 on success */
 
     kprintf("[PROC] pid %u exec: %s -> entry 0x%x, rsp 0x%x\n\r",
-            (uint64_t)p->pid, name, (uint64_t)entry, (uint64_t)rsp);
+            (uint64_t)p->pid, name, (uint64_t)entry_override, (uint64_t)rsp);
 
     return frame;
 }

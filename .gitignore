@@ -11,3 +11,8 @@ build/
 .idea/
 *.swp
 *.swo
+
+# Track C: keep the "ld.so" *directory* (the *.so rule above would
+# ignore it wholesale because its name ends in .so)
+!/userland/ld.so/
+!/userland/ld.so/*

@@ -43,6 +43,7 @@ extern const uint8_t elf_vfs_test_start[], elf_vfs_test_end[];
 extern const uint8_t elf_mm_test_start[], elf_mm_test_end[];
 extern const uint8_t elf_malloc_test_start[], elf_malloc_test_end[];
 extern const uint8_t elf_tty_test_start[], elf_tty_test_end[];
+extern const uint8_t elf_dynamic_test_start[], elf_dynamic_test_end[];
 
 /* ELF self-check (kernel/elf/elf_selftest.c) */
 uint32_t elf_selftest(const void *image, uint64_t size);
@@ -289,6 +290,19 @@ void NO_RETURN kernel_main(void) {
         kprintf("[init] tty test pid %u running.\n\r", (uint64_t)tty_test_pid);
     } else {
         kprintf("[init] ERROR: tty test spawn failed (%d)\n\r", (int)tty_test_pid);
+    }
+
+    /* Track C dynamic-linker test: a PIE whose PT_INTERP pulls in ld-void.so.
+     * The kernel loads the PIE at ELF_DYN_BASE and the rtld (statically linked
+     * ET_EXEC) runs first, relocates the PIE, then jumps to its entry. */
+    kprintf("[init] Spawning dynamic-linker test...\n\r");
+    pid_t_v dynamic_pid = process_spawn_elf(elf_dynamic_test_start,
+                                            (uint64_t)(elf_dynamic_test_end - elf_dynamic_test_start),
+                                            0);
+    if (dynamic_pid > 0) {
+        kprintf("[init] dynamic-linker test pid %u running.\n\r", (uint64_t)dynamic_pid);
+    } else {
+        kprintf("[init] ERROR: dynamic-linker test spawn failed (%d)\n\r", (int)dynamic_pid);
     }
 
     sched_start();

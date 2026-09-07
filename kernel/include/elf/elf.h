@@ -151,6 +151,16 @@ elf_status_t elf_load_into_process(const elf_loader_t *ctx, struct process *p,
  * past the image.  Valid at any time after elf_validate() on the same ctx. */
 uint64_t elf_load_end(const elf_loader_t *ctx);
 
+/* When `ctx` carried a PT_INTERP, load the named dynamic linker into `p`'s
+ * address space (its segments only — the main image's stack and auxv are
+ * already in place) and return its entry point.  The interpreter relocates
+ * the main binary in place and then jumps to its own AT_ENTRY.  Returns
+ * ELF_ERR_INVAL when there is no interp; the resolution/validation errors
+ * are elf_status_t shaped. */
+struct process;
+elf_status_t elf_load_interp(const elf_loader_t *ctx, struct process *p,
+                             uint64_t *out_interp_entry);
+
 /* Resolve a user pathname to a kernel-resident executable image.
  *
  * There is no VFS yet, so every executable is a fixed name built into the
@@ -179,5 +189,7 @@ extern const uint8_t elf_lifecycle_test_start[], elf_lifecycle_test_end[];
 extern const uint8_t elf_vfs_test_start[], elf_vfs_test_end[];
 extern const uint8_t elf_mm_test_start[], elf_mm_test_end[];
 extern const uint8_t elf_malloc_test_start[], elf_malloc_test_end[];
+extern const uint8_t elf_ld_void_so_start[], elf_ld_void_so_end[];
+extern const uint8_t elf_dynamic_test_start[], elf_dynamic_test_end[];
 
 #endif /* VOID_ELF_H */

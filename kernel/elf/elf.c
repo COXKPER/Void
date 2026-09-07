@@ -91,6 +91,8 @@ elf_status_t elf_find_embedded(const char *name, const elf_blob_t *out) {
         { "vfs_test",   elf_vfs_test_start,      elf_vfs_test_end      },
         { "mm_test",    elf_mm_test_start,       elf_mm_test_end       },
         { "malloc_test", elf_malloc_test_start,   elf_malloc_test_end   },
+        { "ld-void.so", elf_ld_void_so_start,     elf_ld_void_so_end    },
+        { "dynamic_test", elf_dynamic_test_start, elf_dynamic_test_end },
     };
 
     if (!name || !out) return ELF_ERR_INVAL;
@@ -417,11 +419,13 @@ static elf_status_t setup_user_stack(process_t *p, const elf_loader_t *ctx,
     return ELF_OK;
 }
 
-/* ── elf_load_into_process ───────────────────────────────────────────── */
-elf_status_t elf_load_into_process(const elf_loader_t *ctx, process_t *p,
-                                   uint64_t *out_entry, uint64_t *out_rsp) {
-    if (!ctx || !ctx->ehdr || !p || !out_entry || !out_rsp) return ELF_ERR_INVAL;
-
+/* ── elf_load_segments ──────────────────────────────────────────────────
+ * Map and populate every PT_LOAD of `ctx` into `p`'s address space, but do
+ * NOT map a stack or touch the initial frame.  Used for the dynamic linker
+ * image, which must share the process the kernel already built for the PIE:
+ * el_load_into_process() already seeded the auxv describing the *main*
+ * binary, and the rtld must not overwrite it with one describing itself. */
+static elf_status_t elf_load_segments_only(const elf_loader_t *ctx, process_t *p) {
     const Elf64_Ehdr *eh = ctx->ehdr;
 
     /* Map every segment before copying anything: a NOMEM halfway through
@@ -442,8 +446,60 @@ elf_status_t elf_load_into_process(const elf_loader_t *ctx, process_t *p,
         elf_status_t s = copy_segment_data(p, ctx, ph, ctx->base);
         if (s != ELF_OK) return s;
     }
+    return ELF_OK;
+}
 
-    elf_status_t s = setup_user_stack(p, ctx, out_rsp);
+/* ── elf_load_interp ────────────────────────────────────────────────────
+ * When the main image carried a PT_INTERP, hoist the named dynamic linker
+ * into the same address space and run it first.  The interpreter is itself a
+ * statically linked ET_EXEC loaded at its own base; it relocates the main
+ * binary by reading the auxv the kernel seeded for it (AT_PHDR/AT_ENTRY/
+ * AT_BASE all describe the *main* image), then jumps to AT_ENTRY.
+ *
+ * The interp path is a filesystem path with no FS to resolve against, so the
+ * basename is matched to an embedded blob (the same lookup execve() uses).
+ * On success `*out_interp_entry` is the interpreter's entry point; the caller
+ * jumps there instead of the main image's entry.
+ *
+ * ponytail: exactly one interpreter is loaded, in-place, and the main image
+ * must have no DT_NEEDED a real loader would satisfy — Void has no writable
+ * FS or file-backed mmap yet, so a DSO is linked into the same image.  Real
+ * DSO load-on-demand is the upgrade when file-backed mapping lands. */
+elf_status_t elf_load_interp(const elf_loader_t *ctx, process_t *p,
+                             uint64_t *out_interp_entry) {
+    if (!ctx || !ctx->has_interp) return ELF_ERR_INVAL;
+
+    /* Basename of the interpreter path: everything up to the last '/' is a
+     * directory that doesn't exist to resolve against. */
+    const char *base = ctx->interp;
+    for (const char *c = ctx->interp; *c; c++)
+        if (*c == '/') base = c + 1;
+
+    elf_blob_t blob;
+    elf_status_t es = elf_find_embedded(base, &blob);
+    if (es != ELF_OK) return es;
+
+    elf_loader_t ic;
+    es = elf_validate(blob.base, blob.size, &ic);
+    if (es != ELF_OK) return es;
+    if (ic.has_interp) return ELF_ERR_NOEXEC;   /* an interpreter must not recurse */
+
+    es = elf_load_segments_only(&ic, p);
+    if (es != ELF_OK) return es;
+
+    *out_interp_entry = ic.entry + ic.base;     /* ET_EXEC: pre-bias is final */
+    return ELF_OK;
+}
+
+/* ── elf_load_into_process ───────────────────────────────────────────── */
+elf_status_t elf_load_into_process(const elf_loader_t *ctx, process_t *p,
+                                   uint64_t *out_entry, uint64_t *out_rsp) {
+    if (!ctx || !ctx->ehdr || !p || !out_entry || !out_rsp) return ELF_ERR_INVAL;
+
+    elf_status_t s = elf_load_segments_only(ctx, p);
+    if (s != ELF_OK) return s;
+
+    s = setup_user_stack(p, ctx, out_rsp);
     if (s != ELF_OK) return s;
 
     /* Entry: ET_DYN is relative, biased by the load base. */

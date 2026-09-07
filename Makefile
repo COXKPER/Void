@@ -31,11 +31,20 @@ override UCFLAGS := -std=c2x -Wall -Wextra -O2 \
 
 override ULDFLAGS := -nostdlib -static -z max-page-size=0x1000 -z noexecstack
 
-UELF := build/userland/elf_test.elf build/userland/elf_packed.elf build/userland/init.elf build/userland/ipc_test.elf build/userland/forkexec_test.elf build/userland/calc.elf build/userland/srv_test.elf build/userland/lifecycle_test.elf build/userland/vfs_test.elf build/userland/mm_test.elf build/userland/malloc_test.elf build/userland/tty_test.elf
+UELF := build/userland/elf_test.elf build/userland/elf_packed.elf build/userland/init.elf build/userland/ipc_test.elf build/userland/forkexec_test.elf build/userland/calc.elf build/userland/srv_test.elf build/userland/lifecycle_test.elf build/userland/vfs_test.elf build/userland/mm_test.elf build/userland/malloc_test.elf build/userland/tty_test.elf build/userland/ld_so.elf build/userland/dynamic_test.elf
 
 # libc runtime objects (freestanding userland helpers); linked into the
 # tests that need them.  Compiled with the same UCFLAGS as the tests.
 LIBC_OBJ := build/userland/libc/mem.o build/userland/libc/malloc.o
+
+# Position-independent libc + test for the dynamic-linker regression: UCFLAGS
+# is -fno-pic -fno-pie (a static non-PIE), so the PIE side of the tree has its
+# own flag set.  PICFLAGS is UCFLAGS with the two anti-PIC flags swapped for
+# -fPIC; the -shared link produces the ET_DYN image the kernel loads at
+# ELF_DYN_BASE and the rtld relocates.
+override PICFLAGS := $(subst -fno-pic -fno-pie,-fPIC,$(UCFLAGS))
+override PICLDFLAGS := -nostdlib -shared -z max-page-size=0x1000 -z noexecstack --hash-style=sysv
+LIBC_PIC_OBJ := build/userland/libc/mem-pic.o build/userland/libc/malloc-pic.o
 
 CSRC := $(shell find kernel -name '*.c')
 ASMSRC := $(shell find kernel -name '*.asm')
@@ -132,6 +141,42 @@ build/userland/tty_test.elf: build/userland/tty_test.c.o build/userland/crt0.asm
 $(LIBC_OBJ): build/userland/libc/%.o: userland/libc/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(UCFLAGS) -c $< -o $@
+
+# ── position-independent libc (the -fPIC twin of LIBC_OBJ) ────────
+$(LIBC_PIC_OBJ): build/userland/libc/%-pic.o: userland/libc/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(PICFLAGS) -c $< -o $@
+
+# ── the userland dynamic linker (ld-void.so) ──────────────────────
+# A statically linked ET_EXEC at 0x400000: it must be loadable with no
+# linker of its own.  The kernel loads it whenever a PIE's PT_INTERP names
+# it; it relocates the PIE using the auxv the kernel seeded, then jumps to
+# AT_ENTRY.  It is embedded like every other test blob (elf_blobs.asm).
+build/userland/ld.so/rtld.c.o: userland/ld.so/rtld.c userland/ld.so/rtld.h
+	@mkdir -p $(dir $@)
+	$(CC) $(UCFLAGS) -c userland/ld.so/rtld.c -o $@
+
+build/userland/ld.so/rtld_start.asm.o: userland/ld.so/rtld_start.S
+	@mkdir -p $(dir $@)
+	$(CC) $(UCFLAGS) -c userland/ld.so/rtld_start.S -o $@
+
+build/userland/ld_so.elf: build/userland/ld.so/rtld.c.o build/userland/ld.so/rtld_start.asm.o userland/ld.so/rtld.ld
+	$(LD) $(ULDFLAGS) -T userland/ld.so/rtld.ld build/userland/ld.so/rtld_start.asm.o build/userland/ld.so/rtld.c.o -o $@
+
+# ── the dynamic-linker regression (dynamic_test) ────────────────────
+# A PIE ("shared object that is the whole program"): -shared with a .interp,
+# every libc function built -fPIC into the same image, entry = dynamic_main.
+# Its four relocation types all name in-image symbols the rtld can resolve.
+build/userland/dynamic_test.c.o: userland/dynamic_test.c
+	@mkdir -p $(dir $@)
+	$(CC) $(PICFLAGS) -c userland/dynamic_test.c -o $@
+
+build/userland/dynamic_test.interp.o: userland/ld.so/interp.c
+	@mkdir -p $(dir $@)
+	$(CC) $(PICFLAGS) -c userland/ld.so/interp.c -o $@
+
+build/userland/dynamic_test.elf: build/userland/dynamic_test.c.o $(LIBC_PIC_OBJ) build/userland/dynamic_test.interp.o
+	$(LD) $(PICLDFLAGS) -e dynamic_main build/userland/dynamic_test.c.o $(LIBC_PIC_OBJ) build/userland/dynamic_test.interp.o -o $@
 
 # incbin reads the linked user ELFs, so they must exist before nasm runs.
 build/kernel/elf/elf_blobs.asm.o: $(UELF)

@@ -96,3 +96,22 @@ global elf_tty_test_end
 elf_tty_test_start:
     incbin "build/userland/tty_test.elf"
 elf_tty_test_end:
+
+; Track C: the dynamic linker (ld-void.so) and the PIE that exercises it.
+; ld_so.elf is a static ET_EXEC at 0x400000; dynamic_test.elf is an ET_DYN
+; ("-shared") PIE with PT_INTERP naming /lib/ld-void.so.  Both are embedded
+; like every other test blob.
+
+align 4096
+global elf_ld_void_so_start
+global elf_ld_void_so_end
+elf_ld_void_so_start:
+    incbin "build/userland/ld_so.elf"
+elf_ld_void_so_end:
+
+align 4096
+global elf_dynamic_test_start
+global elf_dynamic_test_end
+elf_dynamic_test_start:
+    incbin "build/userland/dynamic_test.elf"
+elf_dynamic_test_end:
