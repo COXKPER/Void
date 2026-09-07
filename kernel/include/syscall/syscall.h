@@ -52,6 +52,7 @@ typedef struct process process_t;
 /* ── errno values (negated on return, POSIX names) ───────────────────── */
 #define VE_PERM     1    /* EPERM  */
 #define VE_NOENT    2    /* ENOENT */
+#define VE_IO       5    /* EIO    */
 #define VE_BADF     9    /* EBADF  */
 #define VE_CHILD   10    /* ECHILD */
 #define VE_NOMEM   12    /* ENOMEM */

@@ -14,6 +14,7 @@
 #include <syscall/syscall.h>
 #include <void/voidfs.h>
 #include <void/device.h>
+#include <dev/serial_drv.h>
 
 /* Forward declarations for subsystems */
 extern void gdt_init(void);
@@ -157,6 +158,7 @@ void NO_RETURN kernel_main(void) {
 
     voidfs_init();
     dev_init();
+    serial_drv_register();
 
     idt_register_irq(0, timer_handler);
     lapic_init(100);

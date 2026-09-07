@@ -13,6 +13,7 @@
 #include <mm/vmm.h>
 #include <mm/pmm.h>
 #include <dev/serial.h>
+#include <dev/serial_drv.h>
 #include <void/boot.h>
 #include <void/voidfs.h>
 #include <ipc/ipc.h>
@@ -149,33 +150,21 @@ static int64_t sys_read(process_t *p, int32_t fd, uint64_t ubuf, uint64_t count)
 
     if (p->fds[fd].type != FD_SERIAL)   return -VE_BADF;
 
-    /* Bounded staging buffer for reads */
+    /* The console is one shared device instance owned by the kernel; fd 0
+     * routes through the device layer.  dev_read gathers available chars
+     * non-blocking, exactly as the old serial_getchar loop did. */
+    void *inst = serial_drv_instance();
+    if (!inst) return -VE_IO;            /* console not up (boot-order bug) */
+
     char buf[256];
-    uint64_t nread = 0;
     uint64_t to_read = count > sizeof(buf) ? sizeof(buf) : count;
+    int nread = dev_read(inst, (uint64_t)(uintptr_t)buf, to_read);
+    if (nread < 0) return (int64_t)nread;
 
-    /* Non-blocking read: gather available chars up to limit or newline */
-    while (nread < to_read) {
-        int ch = serial_getchar();
-        if (ch == -1) {
-            /* No more data available. Return what we have. */
-            break;
-        }
-
-        buf[nread++] = (char)ch;
-
-        /* Stop on newline (shell convention: read until Enter) */
-        if (ch == '\n') {
-            break;
-        }
-    }
-
-    /* Copy staged buffer to user space */
     if (nread > 0) {
-        if (!copy_to_user(p, ubuf, buf, nread))
-            return nread ? (int64_t)nread : -VE_FAULT;
+        if (!copy_to_user(p, ubuf, buf, (uint64_t)nread))
+            return -VE_FAULT;
     }
-
     return (int64_t)nread;
 }
 
@@ -192,6 +181,9 @@ static int64_t sys_write(process_t *p, int32_t fd, uint64_t ubuf, uint64_t count
 
     if (p->fds[fd].type != FD_SERIAL)   return -VE_BADF;
 
+    void *inst = serial_drv_instance();
+    if (!inst) return -VE_IO;            /* console not up (boot-order bug) */
+
     /* Bounded staging buffer: a huge count becomes several iterations
      * rather than a huge kernel stack frame. */
     char buf[256];
@@ -203,8 +195,9 @@ static int64_t sys_write(process_t *p, int32_t fd, uint64_t ubuf, uint64_t count
         if (!copy_from_user(p, buf, ubuf + written, chunk))
             return written ? (int64_t)written : -VE_FAULT;
 
-        for (uint64_t i = 0; i < chunk; i++) serial_putchar(buf[i]);
-        written += chunk;
+        int w = dev_write(inst, buf, chunk);
+        if (w < 0) return written ? (int64_t)written : (int64_t)w;
+        written += (uint64_t)w;
     }
     return (int64_t)written;
 }
